@@ -220,5 +220,7 @@ def test_an_untagged_pane_still_goes_by_the_db(db, repo, root):
 def test_spawn_tags_the_pane_with_its_agent(db, repo):
     ws = workspaces.create(db, str(repo), "feat-tag").workspace
     a = agents.spawn(db, ws, "developer", prompt="hi", provider_name="shell", mode="handoff")
-    assert tmux.get_pane_tag(a.tmux_window, agents.AGENT_TAG) == a.id
+    import time as _t; _t.sleep(1.5)
+    listing = tmux._tmux("list-panes", "-a", "-F", "#{session_name} #{pane_id} dead=#{pane_dead} cmd=#{pane_current_command} deadstatus=#{pane_dead_status} deadsig=#{pane_dead_signal} tag=#{@copse_agent}", check=False)
+    assert tmux.get_pane_tag(a.tmux_window, agents.AGENT_TAG) == a.id, listing.stdout + listing.stderr
     assert agents.owns_pane(db, a)
