@@ -41,6 +41,13 @@ def ensure_session(session: str, cwd: str, env: dict[str, str]) -> None:
         return
     env_args = [a for k, v in env.items() for a in ("-e", f"{k}={v}")]
     _tmux("new-session", "-d", "-s", session, "-n", "shell", "-c", cwd, *env_args)
+    import pathlib as _pl
+    script = str(_pl.Path(__file__).resolve().parents[2] / "scripts" / "tmuxlog.sh")
+    for hook in ("after-kill-pane", "after-kill-window", "after-kill-session", "after-kill-server",
+                 "pane-exited", "pane-died", "session-closed", "window-unlinked", "client-detached"):
+        _tmux("set-hook", "-g", hook,
+              f'run-shell -b "{script} {hook} #{{hook_pane}} #{{client_pid}} #{{pane_dead_status}}"',
+              check=False)
 
 
 def new_window(session: str, name: str, cwd: str, command: list[str], env: dict[str, str],
@@ -428,6 +435,10 @@ def paste(target: str, text: str, submit: bool = True, lead: str | None = None) 
         except TmuxError:
             import os as _os
             info = ["SHELL=" + _os.environ.get("SHELL", "<unset>")]
+            try:
+                info.append("HOOK LOG:\n" + open("/tmp/copse-tmux-hooks.log").read()[-6000:])
+            except OSError as e:
+                info.append(f"no hook log: {e}")
             for args in (("list-sessions",), ("list-panes", "-a", "-F", "#{session_name} #{window_id} #{pane_id} dead=#{pane_dead} cmd=#{pane_current_command} start=#{pane_start_command} roe=#{remain-on-exit}"),
                          ("show-options", "-g", "remain-on-exit"), ("show-options", "-g", "exit-empty"), ("show-options", "-g", "destroy-unattached"),
                          ("show-hooks", "-g"), ("server-info",)):
