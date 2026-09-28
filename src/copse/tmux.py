@@ -57,8 +57,11 @@ def new_window(session: str, name: str, cwd: str, command: list[str], env: dict[
         "-n", name, "-c", cwd, *env_args, "--", *command,
     )
     target = proc.stdout.strip()
+    import sys as _sys
+    _sys.stderr.write(f"DEBUG new_window {target} in {session}: {_tmux('list-panes', '-a', '-F', '#{session_name} #{pane_id} dead=#{pane_dead} cmd=#{pane_current_command}', check=False).stdout!r}\n")
     if tag:
-        set_pane_tag(target, *tag)
+        r = set_pane_tag(target, *tag)
+    _sys.stderr.write(f"DEBUG after tag: {_tmux('list-panes', '-a', '-F', '#{session_name} #{pane_id} dead=#{pane_dead} cmd=#{pane_current_command} tag=#{@copse_agent}', check=False).stdout!r}\n")
     # Keep the agent's pane around after it exits so its output can be read.
     _tmux("set-option", "-p", "-t", target, "remain-on-exit", "on", check=False)
     return target
@@ -420,7 +423,17 @@ def paste(target: str, text: str, submit: bool = True, lead: str | None = None) 
     if submit:
         # TUIs debounce paste events; Enter too soon gets folded into the paste.
         time.sleep(0.3)
-        _tmux("send-keys", "-t", target, "Enter")
+        try:
+            _tmux("send-keys", "-t", target, "Enter")
+        except TmuxError:
+            import os as _os
+            info = ["SHELL=" + _os.environ.get("SHELL", "<unset>")]
+            for args in (("list-sessions",), ("list-panes", "-a", "-F", "#{session_name} #{window_id} #{pane_id} dead=#{pane_dead} cmd=#{pane_current_command} start=#{pane_start_command} roe=#{remain-on-exit}"),
+                         ("show-options", "-g", "remain-on-exit"), ("show-options", "-g", "exit-empty"), ("show-options", "-g", "destroy-unattached"),
+                         ("show-hooks", "-g"), ("server-info",)):
+                r = _tmux(*args, check=False)
+                info.append(f"$ tmux {' '.join(args)}\n{r.stdout[-3000:]}{r.stderr}")
+            raise TmuxError("PANE DEBUG\n" + "\n".join(info))
 
 
 def send_keys(target: str, *keys: str) -> None:
