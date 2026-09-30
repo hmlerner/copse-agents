@@ -196,6 +196,7 @@ def enqueue(
     db: DB, caller: Agent | None, caller_ws: Workspace, profile: str, task_text: str, mode: str,
     *, isolate: bool, branch: str | None, done_when: str | None,
     files: list[str] | None, depends_on: list[str] | None, plan_first: bool | None = None,
+    weight: str | None = None,
 ) -> Task:
     """Record a task that can't start yet: no worker, no workspace, just what
     it takes to start it once its dependencies are merged."""
@@ -204,7 +205,7 @@ def enqueue(
         caller_id=caller.id if caller else None, caller_ws_id=caller_ws.id,
         profile=profile, task_text=task_text, mode=mode, isolate=int(isolate),
         branch=branch, done_when=done_when, files=_dumps(files),
-        depends_on=_dumps(depends_on), state="pending", created_at=time.time(),
+        depends_on=_dumps(depends_on), state="pending", created_at=time.time(), weight=weight,
     )
     db.add_task(t)
     if plan_first is not None:
@@ -215,7 +216,7 @@ def enqueue(
 def record_started(
     db: DB, caller_ws: Workspace, worker: Agent, profile: str, task_text: str, mode: str,
     *, isolate: bool, branch: str | None, done_when: str | None,
-    files: list[str] | None, depends_on: list[str] | None,
+    files: list[str] | None, depends_on: list[str] | None, weight: str | None = None,
 ) -> Task:
     """Record a task that started right away, so its ``files`` can be checked
     for overlap against later tasks."""
@@ -224,7 +225,7 @@ def record_started(
         caller_id=worker.parent_id, caller_ws_id=caller_ws.id, profile=profile,
         task_text=task_text, mode=mode, isolate=int(isolate), branch=branch,
         done_when=done_when, files=_dumps(files), depends_on=_dumps(depends_on),
-        state="started", created_at=time.time(), started_at=time.time(),
+        state="started", created_at=time.time(), started_at=time.time(), weight=weight,
     )
     db.add_task(t)
     return t

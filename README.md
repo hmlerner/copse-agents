@@ -382,6 +382,35 @@ Autopilot, merge gates and cleanup:
 | `sidebar` | `"left"` | where the dashboard sits in each window: `"left"` of the chat, or `"bottom"` (full-width rows under it) |
 | `learning` | `"off"` | the name of an installed learning plugin, which records how worker tasks turned out and suggests profiles (see below) |
 | `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
+| `routing` | see below | for each task weight (`light`, `medium`, `heavy`), the profiles `assign`/`handoff` try in order |
+
+### Routing by weight
+
+The supervisor sizes a task and passes `weight` (`"light"`, `"medium"` or
+`"heavy"`) to `assign`/`handoff`; copse picks an available profile for that tier.
+Light is small, well-specified, mechanical work (docs, renames, simple tests);
+medium is a normal feature or bugfix in one area; heavy is design-heavy,
+cross-cutting work, subtle bugs or hard reasoning. The `routing` config maps each
+tier to profile names, tried in order (defaults shown; set one tier and the others
+keep theirs):
+
+```json
+{
+  "routing": {
+    "light":  ["developer-local", "developer"],
+    "medium": ["developer-codex", "developer"],
+    "heavy":  ["developer-heavy", "developer"]
+  }
+}
+```
+
+`developer-codex` runs on Codex; `developer-heavy` on Claude Fable at high effort.
+A profile is skipped when its CLI isn't installed (`claude`, `codex`, `agy`), the
+local model server isn't answering, or its provider is at your `usage_limit`. If a
+learning plugin is selected it chooses among the profiles left; otherwise the first
+wins. When every candidate is out, the repo's `default_agent` runs. The reply says
+what was picked and why, e.g. `weight medium -> developer (Codex at 93%, skipped developer-codex)`.
+An `agent_profile` you pass, or a milestone's `profile`, always wins over weight.
 
 **Learning plugins.** copse can hand what happens to each worker task (review
 verdicts, times the supervisor had to step in, merged or abandoned, tokens, time)

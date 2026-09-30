@@ -37,6 +37,14 @@ def user_profiles_dir() -> Path:
     return copse_home() / "agents"
 
 
+WEIGHTS = ("light", "medium", "heavy")
+DEFAULT_ROUTING = {
+    "light": ["developer-local", "developer"],
+    "medium": ["developer-codex", "developer"],
+    "heavy": ["developer-heavy", "developer"],
+}
+
+
 @dataclass
 class RepoConfig:
     setup: list[str] = field(default_factory=list)
@@ -78,6 +86,8 @@ class RepoConfig:
     sidebar: str = "left"              # where the dashboard sits: "left" of the chat or "bottom"
     learning: str = "off"              # "off" or an installed learning plugin's name (see copse.learning)
     learning_candidates: list[str] = field(default_factory=list)  # profiles the learner may pick from
+    # Weight routing: task weight -> profiles to try, in order (see autopilot.choose_profile).
+    routing: dict[str, list[str]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_ROUTING.items()})
 
 
 def _merge_commands(shared: list[str], local: object) -> list[str]:
@@ -136,6 +146,12 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
             setattr(cfg, key, local[key])
         elif key in shared:
             setattr(cfg, key, shared[key])
+    for source in (shared, local):  # per tier, so a repo can override one and keep the rest
+        routing = source.get("routing")
+        if isinstance(routing, dict):
+            for tier, names in routing.items():
+                if tier in WEIGHTS and isinstance(names, list):
+                    cfg.routing[tier] = [n for n in names if isinstance(n, str)]
     if cfg.pool_size is None:
         cfg.pool_size = 1 if cfg.setup else 0
     return cfg

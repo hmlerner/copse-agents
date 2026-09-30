@@ -38,7 +38,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
-from copse.config import CONFIG_DIR, RepoConfig, config_root, load_repo_config
+from copse.config import CONFIG_DIR, WEIGHTS, RepoConfig, config_root, load_repo_config
 from copse.db import DB, Agent, Autopilot, Milestone, Workspace
 from copse.profiles import load_profile
 
@@ -73,6 +73,10 @@ to be asked each step.
   `files` (the paths/globs each task will touch) so copse can warn about
   overlaps, and `depends_on` (an earlier task's agent id or branch) when one
   task's work must merge before another starts; copse queues it until then.
+- Unless you need a specific profile, pass `weight` on every `assign`:
+  "light" (small, well-specified, mechanical), "medium" (a normal feature or
+  bugfix in one area) or "heavy" (design-heavy, cross-cutting, subtle). copse
+  picks an available profile for that tier.
 - Keep task briefs short: the goal in a sentence or two, the files, and the
   test that proves it done. Workers read the tests and code themselves;
   never paste them. Writing is the slowest thing you do.
@@ -313,13 +317,71 @@ def set_goal(db: DB, root_id: str, goal: str,
     sync_goals_file(db, root_id)
 
 
+CLI_FOR_PROVIDER = {"claude": "claude", "codex": "codex", "antigravity": "agy"}
+
+
+def _unavailable(name: str, cfg: RepoConfig, repo_root: str) -> str | None:
+    """Why routing skips profile ``name`` (its CLI isn't installed, its
+    provider is out of headroom, it doesn't exist), or None if it's usable."""
+    import shutil
+
+    from copse import quota
+
+    try:
+        p = load_profile(name, repo_root)
+    except KeyError:
+        return f"no profile {name}"
+    cli = CLI_FOR_PROVIDER.get(p.provider)
+    if cli and shutil.which(cli) is None:
+        return f"{cli} isn't installed, skipped {name}"
+    if p.provider in quota.PROVIDERS:
+        room = quota.headroom(p.provider, cfg, repo_root)
+        if room <= 100 - cfg.usage_limit:
+            label = quota.NAMES.get(p.provider, p.provider)
+            if p.provider == "native":
+                return f"local model server not answering, skipped {name}"
+            if room <= 0:
+                return f"{label} limit reached, skipped {name}"
+            return f"{label} at {100 - room:.0f}%, skipped {name}"
+    return None
+
+
+def _route_by_weight(db: DB, cfg: RepoConfig, repo_root: str, weight: str, task: str | None,
+                     files: list[str] | None) -> tuple[str | None, bool, str]:
+    """(profile, learned, why) for a task of ``weight``; profile is None when
+    every candidate for the tier is out."""
+    from copse import learning
+
+    skipped: list[str] = []
+    remaining: list[str] = []
+    for name in cfg.routing.get(weight, []):
+        why = _unavailable(name, cfg, repo_root)
+        if why:
+            skipped.append(why)
+        else:
+            remaining.append(name)
+    if not remaining:
+        return None, False, f"every {weight} candidate was out ({'; '.join(skipped) or 'none configured'})"
+    pick = learning.choose(db, cfg, repo_root, task, files, candidates=remaining, weight=weight)
+    name = pick or remaining[0]
+    why = f"weight {weight} -> {name}"
+    detail = [f"learning picked it" if pick else "", *skipped]
+    detail = [d for d in detail if d]
+    if detail:
+        why += f" ({', '.join(detail)})"
+    return name, bool(pick), why
+
+
 def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None,
-                   task: str | None = None, files: list[str] | None = None) -> tuple[str, bool]:
+                   task: str | None = None, files: list[str] | None = None,
+                   weight: str | None = None, why: list[str] | None = None) -> tuple[str, bool]:
     """The worker profile for a delegation, and whether learning chose it:
     ``requested`` if given, else the first unverified milestone's profile in
-    the caller's session, else (with a learning plugin selected) the plugin's
-    pick for this task, else the repo's ``default_agent``. Raises
-    AutopilotError if it doesn't exist."""
+    the caller's session, else the repo's routing for ``weight`` (available
+    candidates only, a learning plugin choosing among them), else a learning
+    plugin's pick among ``learning_candidates``, else the repo's
+    ``default_agent``. Raises AutopilotError if it doesn't exist. An
+    explanation of a routed pick is appended to ``why``."""
     name = (requested or "").strip()
     learned = False
     if not name:
@@ -329,9 +391,20 @@ def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None
         from copse import learning
 
         cfg = load_repo_config(repo_root)
-        name = learning.choose(db, cfg, repo_root, task, files) or ""
-        learned = bool(name)
-        name = name or cfg.default_agent
+        if weight:
+            if weight not in WEIGHTS:
+                raise AutopilotError(f"weight must be one of {', '.join(WEIGHTS)}, not {weight!r}")
+            picked, learned, note = _route_by_weight(db, cfg, repo_root, weight, task, files)
+            if picked:
+                name = picked
+            else:
+                note += f"; using {cfg.default_agent}"
+            if why is not None:
+                why.append(note)
+        if not name:
+            name = learning.choose(db, cfg, repo_root, task, files, weight=weight) or ""
+            learned = bool(name)
+            name = name or cfg.default_agent
     try:
         load_profile(name, repo_root)
     except KeyError:
