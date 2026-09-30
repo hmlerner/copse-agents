@@ -86,6 +86,9 @@ class RepoConfig:
     sidebar: str = "left"              # where the dashboard sits: "left" of the chat or "bottom"
     learning: str = "off"              # "off" or an installed learning plugin's name (see copse.learning)
     learning_candidates: list[str] = field(default_factory=list)  # profiles the learner may pick from
+    # Which installed plugin to use per group ("events", "policy", "account"), or "off";
+    # unset: the only one installed, if exactly one (see copse.plugins).
+    plugins: dict[str, str] = field(default_factory=dict)
     message_delivery: str = "pull"     # agent messages to an interactive supervisor: "pull" (a notice, then read_messages) or "push" (the text itself)
     # Weight routing: task weight -> profiles to try, in order (see autopilot.choose_profile).
     routing: dict[str, list[str]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_ROUTING.items()})
@@ -147,6 +150,12 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
             setattr(cfg, key, local[key])
         elif key in shared:
             setattr(cfg, key, shared[key])
+    for source in (shared, local):  # per group, so a repo can override one and keep the rest
+        plugins = source.get("plugins")
+        if isinstance(plugins, dict):
+            for group, name in plugins.items():
+                if isinstance(group, str) and isinstance(name, str):
+                    cfg.plugins[group] = name
     for source in (shared, local):  # per tier, so a repo can override one and keep the rest
         routing = source.get("routing")
         if isinstance(routing, dict):

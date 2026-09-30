@@ -261,6 +261,7 @@ your own status line prints, so what you see doesn't change.
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
 | `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
+| `copse account [ARGS...]` | copse Pro's account commands, passed through to the installed account plugin (see "Plugins" below); without one it says so and exits 0 |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
 | `copse attach / cd / open [WS]` | tmux session / path / editor |
 | `copse status / diff [--stat] [WS]` | compared with the base branch (committed + uncommitted) |
@@ -389,6 +390,7 @@ Autopilot, merge gates and cleanup:
 | `message_delivery` | `"pull"` | how agent and copse messages reach an interactive supervisor: `"pull"` keeps them unread and delivers one notice ("copse: 2 new messages (from 9f742c5c, pipeline). Call read_messages."; the sidebar shows an unread count), `"push"` delivers each message's text. Messages you send (`copse send`, typing) and messages to workers are always pushed |
 | `learning` | `"off"` | the name of an installed learning plugin, which records how worker tasks turned out and suggests profiles (see below) |
 | `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
+| `plugins` | `{}` | which installed plugin to use per group, e.g. `{"events": "<name>", "policy": "off"}`; unset, a group uses the only plugin installed in it (see "Plugins" below) |
 | `routing` | see below | for each task weight (`light`, `medium`, `heavy`), the profiles `assign`/`handoff` try in order |
 
 ### Routing by weight
@@ -429,6 +431,26 @@ entry point (see `copse/learning.py` for the interface), installed with
 `uv tool install copse-agents --with <plugin>` and selected with
 `"learning": "<name>"`. A plugin that's missing or fails never breaks a review,
 merge or delegation.
+
+**Plugins.** Learning is one of four entry-point groups a package can extend
+copse through (`copse/plugins.py` loads them; each interface is in the module
+named):
+
+| group | interface | what copse does with it |
+|---|---|---|
+| `copse.learning` | `copse/learning.py` | records task outcomes, suggests profiles (opt-in with `learning`, above) |
+| `copse.events` | `copse/events.py` | is told when a task starts (`assign`/`handoff`), a reviewer decides, the supervisor is asked to step in, a branch merges or a worktree is removed: the repo, the worker's id, branch, profile, provider and model, who caused it, and when. Never a diff, a prompt or the task text |
+| `copse.policy` | `copse/policy.py` | may refuse a delegation or a merge with a reason; `assign`/`handoff` then reply "Not started: ..." and `merge_workspace` (and the pipeline) "Not merged: ..." |
+| `copse.account` | `copse/account.py` | handles `copse account ...` |
+
+An entry point's object is a factory `make(repo_root)` returning the plugin
+(or `None`), called once per repo per process. The events, policy and account
+groups select themselves: when exactly one plugin is installed in a group it's
+used; with several, or to turn one off, set `plugins` in the config. With no
+plugin, every delegation and merge is allowed and nothing is reported. A
+plugin that's missing, broken or raises is logged and ignored, never failing
+what copse was doing. copse Pro ships plugins for these groups; copse itself
+ships none.
 
 **Closing and cleaning up.** Press `x` on an agent in the sidebar (twice for one
 that's still running) or run `copse close <id>` to stop it and hide it. Stopping means

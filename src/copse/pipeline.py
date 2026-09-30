@@ -30,7 +30,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-from copse import agents, autopilot, codemap, gates, git, history, learning, tasks, workspaces
+from copse import agents, autopilot, codemap, events, gates, git, history, learning, policy, tasks, workspaces
 from copse.config import RepoConfig, load_repo_config
 from copse.db import DB, Agent, Workspace
 
@@ -55,26 +55,55 @@ def _tell(db: DB, parent_id: str | None, text: str, sender_id: str | None) -> No
             pass
 
 
-def _note(db: DB, ws: Workspace, worker: Agent | None = None, **event) -> None:
-    """Tell a learning plugin about ``ws``'s worker (a no-op unless the repo
-    has one selected; never raises)."""
+def _note(db: DB, ws: Workspace, worker: Agent | None = None, *,
+          actor: Agent | str | None = None, **event) -> None:
+    """Tell the learning and events plugins about ``ws``'s worker (a no-op
+    unless the repo has them; never raises). ``event`` is one of
+    ``approved=``, ``escalated=True`` or ``merged=`` (see learning.note);
+    the events plugin hears it as a review, escalated, merge or remove
+    event from ``actor``."""
     try:
         cfg = load_repo_config(ws.repo_root)
-        learning.note(db, cfg, worker or agents.workspace_worker(db, ws), ws, **event)
+        worker = worker or agents.workspace_worker(db, ws)
+    except Exception:
+        return
+    try:
+        learning.note(db, cfg, worker, ws, **event)
     except Exception:
         pass
+    if event.get("approved") is not None:
+        events.emit(cfg, "review", ws, worker, actor=actor, approved=event["approved"])
+    if event.get("escalated"):
+        events.emit(cfg, "escalated", ws, worker, actor=actor)
+    if event.get("merged") is True:
+        events.emit(cfg, "merge", ws, worker, actor=actor)
+    elif event.get("merged") is False:
+        events.emit(cfg, "remove", ws, worker, actor=actor, merged=False)
 
 
-def note_review(db: DB, ws: Workspace, approved: bool) -> None:
-    _note(db, ws, approved=approved)
+def note_review(db: DB, ws: Workspace, approved: bool, reviewer: Agent | None = None) -> None:
+    _note(db, ws, approved=approved, actor=reviewer)
 
 
-def note_removed_unmerged(db: DB, ws: Workspace) -> None:
-    _note(db, ws, merged=False)
+def note_removed_unmerged(db: DB, ws: Workspace, actor: Agent | None = None) -> None:
+    _note(db, ws, merged=False, actor=actor)
+
+
+def note_removed_merged(db: DB, ws: Workspace, actor: Agent | None = None,
+                        worker: Agent | None = None) -> None:
+    """A worktree whose branch had merged is being removed: an event only
+    (the learning plugin heard about the merge). Pass ``worker`` when the
+    workspace's records are already gone."""
+    try:
+        cfg = load_repo_config(ws.repo_root)
+        worker = worker or agents.workspace_worker(db, ws)
+    except Exception:
+        return
+    events.emit(cfg, "remove", ws, worker, actor=actor, merged=True)
 
 
 def _escalate(db: DB, ws: Workspace, worker: Agent | None) -> None:
-    _note(db, ws, worker, escalated=True)
+    _note(db, ws, worker, escalated=True, actor="copse")
 
 
 # -- stage 1: a worker reported ---------------------------------------------------
@@ -159,6 +188,8 @@ def on_review(db: DB, reviewer: Agent, ws: Workspace, approved: bool, summary: s
                   f"[copse pipeline] {text} Removing the worktree.\n\nWorker's report:\n{report}"
                   f"\n\nReview ({reviewer.id}): approved.\n{summary}", worker.id)
             note = _remove(db, ws, keep=reviewer)
+            if not note.startswith("("):
+                note_removed_merged(db, ws, actor=reviewer, worker=worker)
             if note.startswith("("):
                 _tell(db, parent_id, f"[copse pipeline] {ws.branch}: {note}", worker.id)
         else:
@@ -234,6 +265,9 @@ def merge(db: DB, caller: Agent | None, ws: Workspace, squash: bool = False) -> 
     pilot = autopilot.for_agent(db, caller.id) if caller else None
     review = cfg.review if cfg.review is not None else bool(pilot and pilot.enabled)
 
+    verdict = policy.check_merge(cfg, ws, agents.workspace_worker(db, ws), caller)
+    if not verdict.allowed:
+        return f"Not merged: the repo's policy refused it: {verdict.reason}"
     try:
         behind, _ahead = git.ahead_behind(ws.path, workspaces.require_base(ws))
         if behind:
@@ -277,7 +311,7 @@ def merge(db: DB, caller: Agent | None, ws: Workspace, squash: bool = False) -> 
         db, ws.repo_root, "merge", agent=caller, with_usage=True, branch=ws.branch,
         task=f"merge {ws.branch} into {ws.base_branch}", result=text,
     )
-    _note(db, ws, merged=True, checks_passed=True)
+    _note(db, ws, merged=True, checks_passed=True, actor=caller)
     tasks.on_merged(db, ws)
     codemap.refresh_later(ws.repo_root)
     if pilot:
