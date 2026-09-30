@@ -32,15 +32,19 @@ Goals come from the chat (the supervisor calls ``set_goal``) or from
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from copse.config import CONFIG_DIR, WEIGHTS, RepoConfig, config_root, load_repo_config
 from copse.db import DB, Agent, Autopilot, Milestone, Workspace
 from copse.profiles import load_profile
+
+log = logging.getLogger(__name__)
 
 GOALS_FILE = "goals.md"
 MAX_NUDGES = 3
@@ -251,7 +255,7 @@ def sync_goals_file(db: DB, root_id: str) -> None:
         finally:
             tmp.unlink(missing_ok=True)
     except Exception:  # noqa: BLE001
-        pass
+        log.exception("copse: couldn't sync milestone status to goals.md")
 
 
 # -- sessions ----------------------------------------------------------------

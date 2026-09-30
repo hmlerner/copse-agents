@@ -227,3 +227,11 @@ def test_check_milestones_syncs(db, repo):
     new = goals(repo)
     assert re.search(r"status: passed( at [0-9a-f]{7})? \(\d{4}-\d{2}-\d{2}\)", new)
     assert re.search(r"status: failed", new)
+
+
+def test_a_sync_failure_is_logged_not_raised(db, repo, monkeypatch, caplog):
+    ws = load(db, repo)
+    monkeypatch.setattr(autopilot, "rewrite_goals", lambda *a: 1 / 0)
+    (repo / "api.txt").write_text("x")
+    autopilot.check_milestones(db, "boss", ws, cfg=autopilot.RepoConfig())
+    assert "couldn't sync milestone status" in caplog.text
