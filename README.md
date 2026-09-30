@@ -217,6 +217,13 @@ now, and `copse autopilot off` (or `on`) hands the wheel back (or takes it
 again). `copse --no-autopilot`, or `"autopilot": false` in the repo config,
 starts without it.
 
+When your Claude usage reaches `usage_limit`, autopilot pauses for usage: its
+running Claude workers stop (worktrees, branches, queued messages and sessions
+are kept) and the sidebar says "paused for usage until <time>". Once the usage
+window resets, copse restarts those workers on its own, sets autopilot running
+again and tells the supervisor what it resumed. Speaking to the supervisor
+doesn't end the pause.
+
 To track your Claude usage, copse gives the agents it launches a status line.
 It records the usage percentage Claude Code reports, then prints whatever
 your own status line prints, so what you see doesn't change.

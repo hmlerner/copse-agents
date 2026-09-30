@@ -194,6 +194,11 @@ def render_autopilot(pilot: dict, width: int) -> list[Line]:
     total = len(pilot["milestones"])
     state = {"done": ("goal reached", "ok"), "blocked": ("needs you", "alert"),
              "stalled": ("stalled: needs you", "alert")}.get(pilot["state"])
+    if pilot["state"] == "usage_paused":
+        until = pilot.get("usage_resets_at")
+        when = (f" until {time.strftime('%-I:%M%p', time.localtime(until)).lower()}"
+                if isinstance(until, (int, float)) else "")
+        state = (f"paused for usage{when}", "alert")
     parts = [f"{done} of {total} verified"]
     if state:
         parts.append(state[0])

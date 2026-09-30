@@ -57,6 +57,12 @@ def _stale_after(db: DB, a: Agent, cache: dict[str, float]) -> float:
     return cache[ws.repo_root]
 
 
+def _usage_paused(db: DB, a: Agent) -> bool:
+    """A worker stopped for the Claude usage limit: it comes back on its own."""
+    ap = db.get_autopilot(_root(db, a))
+    return ap is not None and ap.state == "usage_paused"
+
+
 def sweep(db: DB, now: float | None = None) -> list[str]:
     """One pass. Returns what it did, one line each."""
     now = time.time() if now is None else now
@@ -87,11 +93,19 @@ def sweep(db: DB, now: float | None = None) -> list[str]:
         if stopped:
             done.append(f"stopped {stopped} leftover process(es) of {len(found)} agent(s)")
 
+    # 1b. Autopilot sessions at the Claude usage limit: stop their workers,
+    # or bring them back once the window has reset.
+    from copse import autopilot
+
+    done.extend(autopilot.usage_sweep(db, now))
+
     # 2. Workers nobody needs any more.
     limits: dict[str, float] = {}
     for a in db.list_agents():
         if (a.mode not in agents.REPORTING_MODES or a.dismissed_at is not None
                 or not agents.runs_process(a)):
+            continue
+        if a.status == "paused" and _usage_paused(db, a):
             continue
         limit = _stale_after(db, a, limits)
         idle_for = now - max(a.created_at, a.status_since or 0)

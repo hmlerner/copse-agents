@@ -78,12 +78,14 @@ CREATE TABLE IF NOT EXISTS autopilot (
     enabled INTEGER NOT NULL DEFAULT 1,
     goal TEXT,                     -- NULL until the user says what we're building
     detail TEXT,
-    state TEXT NOT NULL DEFAULT 'running',  -- running | blocked | stalled | done
+    state TEXT NOT NULL DEFAULT 'running',  -- running | blocked | stalled | usage_paused | done
     note TEXT,                     -- why it's blocked or stalled
     progress INTEGER NOT NULL DEFAULT 0,    -- bumped whenever real progress happens
     nudges INTEGER NOT NULL DEFAULT 0,      -- "keep going" nudges since the last progress
     nudged_at INTEGER,             -- the progress count at the last nudge
     checking_since REAL,           -- a milestone check is running in the background
+    usage_resets_at REAL,          -- when state is usage_paused: the usage window's reset time
+    usage_paused_ids TEXT,         -- JSON list of the workers stopped for usage
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS milestones (
@@ -305,6 +307,8 @@ class Autopilot:
     nudged_at: int | None
     created_at: float
     checking_since: float | None = None
+    usage_resets_at: float | None = None
+    usage_paused_ids: str | None = None
 
 
 @dataclass
@@ -453,6 +457,10 @@ class DB:
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(autopilot)")}
         if "checking_since" not in cols:
             self.conn.execute("ALTER TABLE autopilot ADD COLUMN checking_since REAL")
+        if "usage_resets_at" not in cols:
+            self.conn.execute("ALTER TABLE autopilot ADD COLUMN usage_resets_at REAL")
+        if "usage_paused_ids" not in cols:
+            self.conn.execute("ALTER TABLE autopilot ADD COLUMN usage_paused_ids TEXT")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(milestones)")}
         for col in ("checked_sha", "passed_sha", "profile"):
             if col not in cols:
