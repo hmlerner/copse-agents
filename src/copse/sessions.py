@@ -103,7 +103,8 @@ def handover(db: DB, old_root_id: str, dest: Workspace, note: str | None = None,
             if prev.status != "pending":
                 db.record_check(m.id, prev.status == "passed", prev.output or "", prev.checked_sha,
                                 passed_sha=prev.passed_sha)
-        db.update_autopilot(old_root_id, enabled=0)
+        db.update_autopilot(old_root_id, enabled=0)   # the old session stops syncing goals.md
+        pilot.sync_goals_file(db, new.id)
     with db.tx() as c:
         c.execute("UPDATE agents SET parent_id=? WHERE parent_id=?", (new.id, old_root_id))
         c.execute("UPDATE tasks SET caller_id=?, caller_ws_id=? WHERE caller_id=? "

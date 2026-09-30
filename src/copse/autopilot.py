@@ -126,6 +126,8 @@ def parse_goals(text: str) -> Plan | None:
         if m := re.match(r"^##\s+(.+?)\s*$", line):
             milestones.append([m.group(1), None, [], None])
             continue
+        if milestones and STATUS_RE.match(line):
+            continue   # written by sync_goals_file: information only, never read back
         if milestones and milestones[-1][3] is None and (
             m := re.match(r"^\s*profile:\s*`?([\w.-]+)`?\s*$", line, re.I)
         ):
@@ -144,11 +146,110 @@ def parse_goals(text: str) -> Plan | None:
                 [(t, c, clean(d), *([p] if p else [])) for t, c, d, p in milestones])
 
 
+def goals_path(root: str) -> Path:
+    # config_root: in a linked worktree the git-ignored .copse lives in the
+    # main checkout, and that is the file the session loads (and syncs to).
+    return config_root(root) / CONFIG_DIR / GOALS_FILE
+
+
 def load_goals_file(root: str) -> Plan | None:
-    path = config_root(root) / CONFIG_DIR / GOALS_FILE
+    path = goals_path(root)
     if not path.is_file():
         return None
     return parse_goals(path.read_text(encoding="utf-8"))
+
+
+# A status line is what sync_goals_file writes under each milestone. The
+# format is strict so user prose is never mistaken for one.
+STATUS_RE = re.compile(r"^status: (passed|failed|pending)( at [0-9a-f]{7,40})?( \(\d{4}-\d{2}-\d{2}\))?\s*$")
+
+
+def status_line(m: Milestone) -> str:
+    """``status: passed at abc1234 (2026-09-29)``: only the state, a short sha
+    and a date, nothing else about the session."""
+    if m.status not in ("passed", "failed"):
+        return "status: pending"
+    sha = (m.passed_sha if m.status == "passed" else None) or m.checked_sha
+    out = f"status: {m.status}"
+    if sha and re.fullmatch(r"[0-9a-f]{7,40}", sha):
+        out += f" at {sha[:7]}"
+    if m.checked_at:
+        out += time.strftime(" (%Y-%m-%d)", time.localtime(m.checked_at))
+    return out
+
+
+def rewrite_goals(text: str, lines_for: list[str]) -> str | None:
+    """``text`` with one status line per milestone (``lines_for``, in order),
+    the rest byte for byte. None when the file's milestones don't number
+    ``len(lines_for)``."""
+    lines = text.splitlines(keepends=True)
+    sections: list[list[int]] = []   # line indexes per milestone, heading first
+    for i, line in enumerate(lines):
+        if re.match(r"^##\s+(.+?)\s*$", line.rstrip("\r\n")):
+            sections.append([i])
+        elif sections:
+            sections[-1].append(i)
+    if len(sections) != len(lines_for):
+        return None
+    out = lines[:sections[0][0]] if sections else lines
+    for idx, new in zip(sections, lines_for):
+        body = [lines[i] for i in idx]
+        eol = "\r\n" if body[0].endswith("\r\n") else "\n"
+        placed, anchor, have_profile, have_check = False, 0, False, False
+        kept: list[str] = []
+        for j, line in enumerate(body):
+            bare = line.rstrip("\r\n")
+            if j and STATUS_RE.match(bare):
+                if not placed:
+                    kept.append(new + (line[len(bare):] or eol))
+                    placed = True
+                continue
+            kept.append(line)
+            if j and not have_profile and re.match(r"^\s*profile:\s*`?([\w.-]+)`?\s*$", bare, re.I):
+                have_profile, anchor = True, len(kept)
+            elif j and not have_check and re.match(r"^\s*check:\s*`?(.+?)`?\s*$", bare, re.I):
+                have_check, anchor = True, len(kept)
+        if not placed:
+            anchor = anchor or 1
+            if not kept[anchor - 1].endswith("\n"):
+                kept[anchor - 1] += eol
+            kept.insert(anchor, new + eol)
+        out += kept
+    return "".join(out)
+
+
+def sync_goals_file(db: DB, root_id: str) -> None:
+    """Write each milestone's status back to the goals.md this session's goal
+    was loaded from. goals.md may be committed, so what goes in it is only
+    passed/failed/pending, a short sha and a date; loading it never trusts a
+    status line. Does nothing for a session that didn't load its goal from a
+    file, has autopilot off (a handover switches the old session's off),
+    is paused, or whose milestones no longer match the file. Never raises: a
+    file we can't write must not fail a check."""
+    try:
+        ap = db.get_autopilot(root_id)
+        root = db.get_agent(root_id)
+        if not ap or not ap.enabled or not ap.goals_file or not ap.goal or root is None \
+                or root.status in ("paused", "done"):
+            return
+        path = Path(ap.goals_file)
+        text = path.read_bytes().decode("utf-8")
+        plan = parse_goals(text)
+        ms = db.milestones(root_id)
+        if plan is None or plan.goal != ap.goal or [m[0] for m in plan.milestones] != [m.title for m in ms]:
+            return   # the goal was replaced from the chat: the file is no longer ours
+        new = rewrite_goals(text, [status_line(m) for m in ms])
+        if new is None or new == text:
+            return
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_bytes(new.encode("utf-8"))
+            os.chmod(tmp, path.stat().st_mode & 0o7777)
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # -- sessions ----------------------------------------------------------------
@@ -179,6 +280,9 @@ def enable(db: DB, root_id: str, ws: Workspace) -> Plan | None:
     plan = load_goals_file(ws.path)
     if plan:
         set_goal(db, root_id, plan.goal, plan.milestones, plan.detail)
+        # Recorded after set_goal, so loading a file never rewrites it: the
+        # first write is after a check. Every milestone starts pending.
+        db.update_autopilot(root_id, goals_file=str(goals_path(ws.path)))
     return plan
 
 
@@ -208,6 +312,7 @@ def set_goal(db: DB, root_id: str, goal: str,
             db.record_check(m.id, prev.status == "passed", prev.output or "", prev.checked_sha,
                             passed_sha=prev.passed_sha)
     db.bump_progress(root_id)
+    sync_goals_file(db, root_id)
 
 
 def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None,
@@ -373,6 +478,7 @@ def check_milestones(db: DB, root_id: str, ws: Workspace, position: int | None =
         db.update_autopilot(root_id, state="done", note=None)
     elif (ap := db.get_autopilot(root_id)) and ap.state == "done":
         db.update_autopilot(root_id, state="running")
+    sync_goals_file(db, root_id)
     regressed_ids = {m.id for m in regressed}
     shown = [m for m in ms if position is None or m.position == position or done or m.id in regressed_ids]
     lines = []

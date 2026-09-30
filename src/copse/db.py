@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS autopilot (
     checking_since REAL,           -- a milestone check is running in the background
     usage_resets_at REAL,          -- when state is usage_paused: the usage window's reset time
     usage_paused_ids TEXT,         -- JSON list of the workers stopped for usage
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    goals_file TEXT                -- the goals.md the goal was loaded from; milestone status is synced back to it
 );
 CREATE TABLE IF NOT EXISTS milestones (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -309,6 +310,7 @@ class Autopilot:
     checking_since: float | None = None
     usage_resets_at: float | None = None
     usage_paused_ids: str | None = None
+    goals_file: str | None = None      # the goals.md this session's goal was loaded from (status is written back)
 
 
 @dataclass
@@ -457,6 +459,8 @@ class DB:
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(autopilot)")}
         if "checking_since" not in cols:
             self.conn.execute("ALTER TABLE autopilot ADD COLUMN checking_since REAL")
+        if "goals_file" not in cols:
+            self.conn.execute("ALTER TABLE autopilot ADD COLUMN goals_file TEXT")
         if "usage_resets_at" not in cols:
             self.conn.execute("ALTER TABLE autopilot ADD COLUMN usage_resets_at REAL")
         if "usage_paused_ids" not in cols:
