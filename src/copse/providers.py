@@ -45,6 +45,7 @@ class LaunchContext:
     cwd: str | None = None      # the workspace it runs in
     session_id: str | None = None  # a new session's id, for CLIs that let copse choose it
     mode: str | None = None     # the agent's mode ('interactive', 'handoff', 'assign', ...)
+    plan_first: bool = False    # its edits are gated on plan approval (the hook watches edit tools too)
 
 
 class Provider:
@@ -256,8 +257,9 @@ class ClaudeCode(Provider):
                 # doesn't prompt (Claude Code's own rules match a compound
                 # command only as a whole). Anything else is left to Claude
                 # Code's permission system. The one thing copse denies is a
-                # file edit by a plan_first worker whose plan isn't approved.
-                "PreToolUse": [{"matcher": "Bash|Edit|Write|NotebookEdit", **self._hook("pre-tool", ctx.agent_id)[0]}],
+                # file edit by a plan_first worker whose plan isn't approved,
+                # so only those agents run the hook on edit tools too.
+                "PreToolUse": [{"matcher": "Bash|Edit|Write|NotebookEdit" if ctx.plan_first else "Bash", **self._hook("pre-tool", ctx.agent_id)[0]}],
             },
             # Claude Code only tells status lines how much of the plan's usage
             # is spent. copse's records that, then runs the person's own

@@ -83,8 +83,15 @@ def test_claude_command_installs_the_hook_for_bash_only():
     argv = ClaudeCode().command(LaunchContext("abc", load_profile("developer"), "go"))
     settings = json.loads(argv[argv.index("--settings") + 1])
     (entry,) = settings["hooks"]["PreToolUse"]
-    assert entry["matcher"] == "Bash|Edit|Write|NotebookEdit"
+    assert entry["matcher"] == "Bash"
     assert "_hook pre-tool --agent abc" in entry["hooks"][0]["command"]
+
+
+def test_plan_first_agents_hook_edit_tools_too():
+    argv = ClaudeCode().command(LaunchContext("abc", load_profile("developer"), "go", plan_first=True))
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    (entry,) = settings["hooks"]["PreToolUse"]
+    assert entry["matcher"] == "Bash|Edit|Write|NotebookEdit"
 
 
 def test_uncovered_part_follows_cd_across_parts(tmp_path):

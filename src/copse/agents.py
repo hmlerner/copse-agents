@@ -600,7 +600,7 @@ def _launch(db: DB, agent: Agent, ws: Workspace, *, prompt: str | None,
 
         trust_folder(ws.path)  # no trust dialog for nobody to answer
     argv = provider.command(LaunchContext(agent.id, profile, prompt, resume=resume, cwd=ws.path,
-                                          mode=agent.mode))
+                                          mode=agent.mode, plan_first=bool(agent.plan_first)))
     target = _open_window(db, agent, ws, f"{profile.name}-{agent.id[:4]}", argv, watch_pane)
 
     if provider.name == "shell" and prompt:
@@ -699,7 +699,8 @@ def run_headless(db: DB, agent_id: str, resume: str | None = None, *,
             new_session = str(uuid.uuid4())
             db.update_agent(agent_id, session_ref=new_session)
         ctx = LaunchContext(agent_id, _profile_for(db, agent, ws), msg.body, resume=session,
-                            cwd=ws.path, session_id=new_session, mode=agent.mode)
+                            cwd=ws.path, session_id=new_session, mode=agent.mode,
+                            plan_first=bool(agent.plan_first))
         print(f"\n── copse: turn {turn} ──\n{_preview(msg.body)}\n", flush=True)
         try:
             code = subprocess.call(provider.command(ctx), cwd=ws.path, stdin=subprocess.DEVNULL)
