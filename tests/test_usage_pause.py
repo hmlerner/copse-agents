@@ -126,6 +126,25 @@ def test_cull_sweep_drives_it_and_keeps_paused_workers(db, session, monkeypatch)
     assert db.get_autopilot("boss").state == "running"
 
 
+def test_limit_error_names_a_non_claude_provider_and_leaves_claude_workers(db, session):
+    db.update_agent("w1", provider="antigravity")
+    autopilot.limit_reached(db, db.get_agent("w1"))
+    ap = db.get_autopilot("boss")
+    assert ap.state == "blocked" and "antigravity" in ap.note and "Claude" not in ap.note
+    assert session.stopped == []
+
+
+def test_claude_limit_error_pauses_only_claude_workers(db, session):
+    ws = db.get_workspace(db.get_agent("boss").workspace_id)
+    db.add_agent(Agent("w2", ws.id, "developer", "antigravity", "boss", "assign",
+                       "processing", "@2", None, time.time()))
+    use(50)  # under the limit, but a turn just failed on it
+    autopilot.limit_reached(db, db.get_agent("w1"))
+    assert session.stopped == ["w1"]
+    assert db.get_agent("w2").status == "processing"
+    assert db.get_autopilot("boss").state == "usage_paused"
+
+
 def test_sidebar_line():
     pilot = {"enabled": True, "goal": "Goal", "milestones": [], "state": "usage_paused",
              "usage_resets_at": RESET, "workers": 0, "note": None}

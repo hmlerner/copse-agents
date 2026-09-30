@@ -525,11 +525,35 @@ def usage_note(u: dict) -> str:
 
 
 def limit_reached(db: DB, agent: Agent) -> None:
-    """A turn failed on the usage limit: stop pushing until the user is back."""
+    """A turn failed on its provider's usage limit: stop pushing until the
+    user is back. Only Claude's window is tracked (see ``usage``), so only a
+    Claude limit, with a reset time known, stops that provider's workers and
+    resumes on its own; any other provider's just blocks and names it."""
     ap = db.get_autopilot(root_of(db, agent.id))
-    if ap and ap.enabled:
-        db.update_autopilot(ap.root_id, state="blocked", nudges=0,
-                            note="Claude's usage limit was reached. Continue when it resets.")
+    if not ap or not ap.enabled:
+        return
+    u = usage() if agent.provider == "claude" else None
+    if u and isinstance(u.get("resets_at"), (int, float)):
+        _pause_provider(db, ap.root_id, agent.provider, u["resets_at"],
+                        "Claude's usage limit was reached")
+        return
+    db.update_autopilot(ap.root_id, state="blocked", nudges=0,
+                        note=f"The {agent.provider} provider's usage limit was reached. "
+                        "Continue when it resets.")
+
+
+def _pause_provider(db: DB, root_id: str, provider: str, resets_at: float, why: str) -> None:
+    from copse import agents
+
+    stopped = [a for a in active_workers(db, root_id)
+               if agents.runs_process(a) and a.provider == provider]
+    for a in stopped:
+        agents.pause_worker(db, a)
+    note = f"{why}. Autopilot paused so work doesn't stall halfway"
+    if stopped:
+        note += f"; {len(stopped)} {provider} worker(s) stopped until then"
+    db.update_autopilot(root_id, state="usage_paused", usage_resets_at=float(resets_at),
+                        note=note + ".", nudges=0)
 
 
 def over_limit(db: DB, root_id: str, cfg: RepoConfig) -> bool:
@@ -544,17 +568,7 @@ def over_limit(db: DB, root_id: str, cfg: RepoConfig) -> bool:
         db.update_autopilot(root_id, state="blocked", note=usage_note(u)
                             + ". Autopilot paused so work doesn't stall halfway.")
         return True
-    from copse import agents
-
-    stopped = [a for a in active_workers(db, root_id)
-               if agents.runs_process(a) and a.provider == "claude"]
-    for a in stopped:
-        agents.pause_worker(db, a)
-    note = usage_note(u) + ". Autopilot paused so work doesn't stall halfway"
-    if stopped:
-        note += f"; {len(stopped)} worker(s) stopped until then"
-    db.update_autopilot(root_id, state="usage_paused", usage_resets_at=float(resets_at),
-                        note=note + ".", nudges=0)
+    _pause_provider(db, root_id, "claude", resets_at, usage_note(u))
     return True
 
 
