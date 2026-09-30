@@ -105,6 +105,9 @@ def agent_entry(db: DB, a: Agent, *, detail: bool = False,
              "status": status, "mode": a.mode}
     if u and u.total:
         entry["tokens"] = usage_mod.short_summary(u)
+    unread = db.unread_count(a.id)
+    if unread:
+        entry["unread"] = unread
     if detail:
         subs = db.native_subagents(a.id) if native_subagents is None else native_subagents
         visible = _visible_native_subagents(subs, now if now is not None else time.time())

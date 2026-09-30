@@ -263,6 +263,8 @@ def render_agent(a: dict, ws: dict, now: float, width: int) -> list[Line]:
     detail = [label + (f" for {ago(now - since)}" if since else "")]
     if a.get("pending"):
         detail.append(f"{plural(a['pending'], 'message')} queued")
+    if a.get("unread"):
+        detail.append(f"✉ {a['unread']} unread")
     if a.get("tokens"):
         detail.append(a["tokens"])
     detail.append(a["id"][:6])

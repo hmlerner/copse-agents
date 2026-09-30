@@ -95,6 +95,15 @@ def copse_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def push_messages(monkeypatch):
+    """Most tests read the messages copse queues for a supervisor directly;
+    tests/test_message_pull.py turns pull mode (the real default) back on."""
+    from copse import agents
+
+    monkeypatch.setattr(agents, "pulls_messages", lambda db, agent: False)
+
+
 @pytest.fixture
 def db(copse_home):
     return DB()

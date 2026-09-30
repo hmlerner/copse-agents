@@ -890,7 +890,7 @@ def agent_peek(agent_id: str, lines: int = typer.Option(40, "--lines", "-n")) ->
 def send(agent_id: str, message: str) -> None:
     """Send a message to an agent (queued until it's idle)."""
     db = DB()
-    outcome = _run(agents.send_message, db, agent_id, message)
+    outcome = _run(agents.send_message, db, agent_id, message, person=True)
     typer.echo(outcome)
 
 
@@ -1087,11 +1087,12 @@ def check_milestones_cmd(root_id: str, workspace_id: str,
         db.update_autopilot(root_id, checking_since=None)
     if db.get_agent(root_id) is None:
         return
-    db.enqueue(root_id, f"[copse] Milestone check finished.\n\n{text}", None)
+    body = f"[copse] Milestone check finished.\n\n{text}"
     try:
-        agents.flush(db, root_id)
-    except tmux.TmuxError:
-        pass  # it stays queued; the next Stop hook hands it over
+        agents.send_message(db, root_id, body)
+    except (agents.AgentError, tmux.TmuxError):
+        # Not running (or unreachable): it stays queued; the next Stop hook hands it over.
+        db.enqueue(root_id, body, None)
 
 
 @app.command("_warm-checks", hidden=True)
