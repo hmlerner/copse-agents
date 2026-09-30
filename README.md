@@ -33,6 +33,10 @@ uv tool install copse-agents                  # once published
 uv tool install --editable ~/Projects/copse   # from a local checkout
 ```
 
+`copse --version` prints the installed version; the tmux status bar of every copse
+session shows it too (`copse 0.11.5`). A session started before an upgrade keeps
+running the old code, and shows the old number, until you restart it.
+
 ## Quick start
 
 `copse doctor` checks that everything copse needs is there (tmux, the agent CLIs,

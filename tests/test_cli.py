@@ -53,3 +53,14 @@ def test_rm_survives_a_missing_base_branch(db, repo, monkeypatch):
     assert res.exit_code == 0, res.output
     assert "removed" in res.output
     assert db.get_workspace(ws.id) is None
+
+
+def test_version_flag_prints_the_installed_version():
+    from typer.testing import CliRunner
+
+    from copse import __version__
+    from copse.cli import app
+
+    out = CliRunner().invoke(app, ["--version"])
+    assert out.exit_code == 0 and out.output.strip() == f"copse {__version__}"
+    assert __version__ != "unknown"
