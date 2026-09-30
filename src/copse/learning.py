@@ -8,8 +8,9 @@ removed unmerged) to a plugin, and asks the plugin to pick a profile when
 A plugin is a Python package that registers an entry point in the
 ``copse.learning`` group (loaded through ``copse.plugins``). The entry
 point's name is what the repo config's ``learning`` key selects
-(``"learning": "<name>"``; the default ``"off"`` loads nothing), and its
-object is a factory::
+(``"learning": "<name>"``; ``"off"`` loads nothing; the default ``"auto"``
+loads copse Pro's ``cloud`` learner when the entitlement includes hosted
+learning and nothing otherwise), and its object is a factory::
 
     def make(repo_root: str) -> LearningPlugin | None
 

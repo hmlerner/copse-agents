@@ -1,10 +1,11 @@
 """``copse account``: hand the command line to an installed account plugin.
 
-copse itself has no accounts. ``copse account [args...]`` passes its
-arguments, untouched, to the plugin installed in the ``copse.account``
-group (a factory ``make(repo_root) -> AccountPlugin | None``; see
-``copse.plugins`` for how one is selected) and exits with what it returns.
-Without one it says that copse Pro isn't installed and exits 0.
+``copse account [args...]`` passes its arguments, untouched, to the plugin
+installed in the ``copse.account`` group (a factory ``make(repo_root) ->
+AccountPlugin | None``; see ``copse.plugins`` for how one is selected) and
+exits with what it returns. copse ships one (``copse.pro.account``), so
+there normally is one; with the group turned off in the config, or none
+installed, it says so and exits 0.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ log = logging.getLogger(__name__)
 
 GROUP = plugins.ACCOUNT
 NOT_INSTALLED = ("copse Pro isn't installed: `copse account` has nothing to do. "
-                 "Install it next to copse (uv tool install copse-agents --with <plugin>).")
+                 "copse's own account plugin is `pro`; check \"plugins\" in .copse/config.json.")
 
 
 class AccountPlugin(ABC):
