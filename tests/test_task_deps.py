@@ -298,6 +298,54 @@ def test_new_task_depending_on_an_already_cancelled_task_fails_clearly(db, repo,
 # -- a missing add_dirs entry reaches the supervisor ---------------------------
 
 
+# -- cancel_task ------------------------------------------------------------------
+
+
+def _queue_chain(db, repo):
+    """A started (files declared so it's recorded), B queued on A, C queued on B."""
+    worker_a = started_worker_id(asyncio.run(
+        mcp_server.assign("developer", "do A", branch="feat-a", files=["a.py"])))
+    asyncio.run(mcp_server.assign("developer", "do B", branch="feat-b", depends_on=[worker_a]))
+    asyncio.run(mcp_server.assign("developer", "do C", branch="feat-c", depends_on=["feat-b"]))
+    by_branch = {t.branch: t for t in db.list_tasks(str(repo))}
+    return by_branch["feat-a"], by_branch["feat-b"], by_branch["feat-c"]
+
+
+def test_cancel_task_by_its_caller_cascades_and_lists_dependents(db, repo, boss):
+    _, b, c = _queue_chain(db, repo)
+
+    out = mcp_server.cancel_task(b.id, "re-planning")
+
+    assert f"Cancelled task {b.id}" in out and c.id in out
+    assert db.get_task(b.id).state == "cancelled"
+    assert db.get_task(c.id).state == "cancelled"
+
+
+def test_cancel_task_refuses_a_task_that_already_started(db, repo, boss):
+    a, _, _ = _queue_chain(db, repo)
+
+    out = mcp_server.cancel_task(a.id)
+
+    assert out.startswith("Error") and "not queued" in out
+    assert db.get_task(a.id).state == "started"
+
+
+def test_cancel_task_refuses_someone_elses_task(db, repo, boss, monkeypatch):
+    _, b, _ = _queue_chain(db, repo)
+    db.add_agent(Agent("other", boss.id, "supervisor", "claude", None, "interactive",
+                       "processing", "@1", None, time.time()))
+    monkeypatch.setenv("COPSE_AGENT_ID", "other")
+
+    out = mcp_server.cancel_task(b.id)
+
+    assert out.startswith("Error") and "isn't yours" in out
+    assert db.get_task(b.id).state == "pending"
+
+
+def test_cancel_task_unknown_id(db, repo, boss):
+    assert mcp_server.cancel_task("nope").startswith("Error")
+
+
 def _missing_add_dir(repo):
     (repo / ".copse" / "config.json").write_text(
         '{"overlap": "warn", "pipeline": false, "add_dirs": ["/no/such/cache"]}')

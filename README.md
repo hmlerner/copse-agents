@@ -284,6 +284,7 @@ knowing them helps when you tell the supervisor how to work.
 | `send_message` | any agent | message another agent; delivered when it's idle |
 | `read_messages` | supervisor | read the messages agents and copse sent you and mark them read; with `message_delivery` `"pull"` (the default) you get a one-line "N new messages" notice instead of each message |
 | `list_agents` / `list_tasks` / `list_agent_profiles` | supervisor | who's running, what's queued, which profiles exist |
+| `cancel_task` | supervisor | cancel a queued task (and its dependents) to re-plan |
 | `workspace_diff` | supervisor | a worker branch's changes against its base |
 | `request_review` / `submit_review` | supervisor / reviewer | start a reviewer on a branch / record its verdict |
 | `merge_workspace` / `remove_workspace` | supervisor | merge through the gates / delete the worktree |
