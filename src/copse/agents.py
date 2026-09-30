@@ -1327,6 +1327,14 @@ def _stop(db: DB, agent: Agent) -> None:
     db.end_native_subagents(agent.id)
 
 
+def pause_worker(db: DB, agent: Agent) -> None:
+    """Stop one worker but keep its work, as ``pause`` does for a session: its
+    worktree, branch, queued messages and CLI session stay, and ``resume``
+    brings it back."""
+    _stop(db, agent)
+    db.set_status(agent.id, "paused")
+
+
 def kill(db: DB, agent_id: str) -> None:
     agent = get(db, agent_id)
     _stop(db, agent)
