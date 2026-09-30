@@ -450,8 +450,14 @@ def default(
     cont: bool = typer.Option(False, "--continue", "-c", help="Pick up the most recent paused session instead of starting fresh."),
     autopilot: Optional[bool] = typer.Option(None, "--autopilot/--no-autopilot", help="Start with autopilot on or off (default: on, or `autopilot` in .copse/config.json)."),
     provider: Optional[str] = typer.Option(None, "--provider", help="Run the supervisor on this CLI instead of Claude Code (codex, antigravity)."),
+    show_version: bool = typer.Option(False, "--version", help="Print copse's version and exit."),
 ) -> None:
     """Bare `copse`: a fresh supervisor chat here (a scratch session outside git)."""
+    if show_version:
+        from copse import __version__
+
+        typer.echo(f"copse {__version__}")
+        raise typer.Exit()
     if ctx.invoked_subcommand is None:
         if cont:
             continue_cmd(session_id=None, attach=True)
