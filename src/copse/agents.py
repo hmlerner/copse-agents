@@ -18,13 +18,14 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 
 from copse import git, tmux, workspaces
 from copse.config import RepoConfig
 from copse.db import DB, Agent, Workspace
-from copse.profiles import load_profile
+from copse.profiles import load_profile, missing_add_dirs
 from copse.providers import LaunchContext, get_provider
 
 log = logging.getLogger(__name__)
@@ -538,6 +539,12 @@ def _launch(db: DB, agent: Agent, ws: Workspace, *, prompt: str | None,
         db.set_status(agent.id, status)
         agent.status = status
         return
+    # Here rather than in spawn, so a resume checks too: a directory can be
+    # deleted between the first launch and a `copse continue`.
+    missing = missing_add_dirs(profile) if provider.name == "claude" else []
+    if missing:
+        print(f"copse: add_dirs names {', '.join(missing)}, which do not exist; "
+              "Claude Code will ignore them", file=sys.stderr)
     if agent.headless:
         _launch_headless(db, agent, ws, prompt=prompt, resume=resume, watch_pane=watch_pane)
         return

@@ -616,3 +616,50 @@ def test_add_dir_is_never_the_last_flag():
     argv = ClaudeCode().command(LaunchContext("abc", profile, "do the thing"))
     last = max(i for i, a in enumerate(argv) if a == "--add-dir")
     assert argv[last + 2].startswith("--"), argv[last:]
+
+
+def test_spawn_reports_a_missing_add_dir_once(db, ws, monkeypatch, capsys):
+    """Claude Code ignores an --add-dir that does not exist, so launch says so,
+    once, however many times the profile is loaded on the way."""
+    from pathlib import Path
+
+    class Launched(Exception):
+        pass
+
+    def stop(*a, **k):
+        raise Launched
+
+    config = Path(ws.repo_root) / ".copse" / "config.json"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text('{"add_dirs": ["/no/such/cache"]}')
+    # Stopped at the window, so every profile load on the way (spawn's own and
+    # _profile_for's) has happened.
+    monkeypatch.setattr(agents, "_open_window", stop)
+    monkeypatch.setattr("copse.providers.trust_folder", lambda path: None)
+
+    with pytest.raises(Launched):
+        agents.spawn(db, ws, "developer", prompt="hi", mode="assign")
+    assert capsys.readouterr().err.count("/no/such/cache") == 1
+
+
+def test_resume_reports_a_missing_add_dir_too(db, ws, monkeypatch, capsys):
+    """A directory can go missing between the first launch and a resume, and
+    resume goes straight to _launch, never through spawn."""
+    from pathlib import Path
+
+    class Launched(Exception):
+        pass
+
+    def stop(*a, **k):
+        raise Launched
+
+    config = Path(ws.repo_root) / ".copse" / "config.json"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text('{"add_dirs": ["/no/such/cache"]}')
+    monkeypatch.setattr(agents, "_open_window", stop)
+    monkeypatch.setattr("copse.providers.trust_folder", lambda path: None)
+    fake_agent(db, ws, status="paused")
+
+    with pytest.raises(Launched):
+        agents.resume(db, "a1", watch_pane=False)
+    assert capsys.readouterr().err.count("/no/such/cache") == 1

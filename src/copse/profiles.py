@@ -14,7 +14,6 @@ built-in profiles shipped with copse.
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass, field, replace
 from importlib import resources
 from pathlib import Path
@@ -141,9 +140,11 @@ def _with_repo_add_dirs(profile: Profile, repo_root: str | None) -> Profile:
 
     Entries are resolved against the repo root rather than passed through, because
     a worktree is the process's working directory and a relative path would
-    otherwise mean ``~/.copse/worktrees/<repo>/<branch>/<path>``. A missing
-    directory is reported: Claude Code ignores an ``--add-dir`` that does not
-    exist, so the failure would be the one this field exists to prevent, silently.
+    otherwise mean ``~/.copse/worktrees/<repo>/<branch>/<path>``. A leading ``~``
+    is expanded first, since nothing downstream runs a shell that would.
+    Checking that they exist is left to launch (see ``missing_add_dirs``): this
+    runs every time a profile is loaded, several times per launch and on every
+    resume, and one launch should say so once.
     """
     if repo_root is None:
         return profile
@@ -156,19 +157,26 @@ def _with_repo_add_dirs(profile: Profile, repo_root: str | None) -> Profile:
         entry = str(entry).strip()
         if not entry:
             continue
-        resolved = str(Path(entry) if Path(entry).is_absolute() else (root / entry).resolve())
+        try:
+            path = Path(entry).expanduser()
+        except RuntimeError:
+            # An unknown user (a typo like ~typo/cache) or no home directory.
+            # Kept as written so missing_add_dirs reports it at launch; raising
+            # here would fail every load_profile, and with it every launch.
+            if entry not in merged:
+                merged.append(entry)
+            continue
+        resolved = str(path if path.is_absolute() else (root / path).resolve())
         if resolved not in merged:
             merged.append(resolved)
-
-    missing = [d for d in merged if not Path(d).is_dir()]
-    if missing:
-        print(
-            "copse: add_dirs names "
-            + ", ".join(missing)
-            + ", which do not exist; Claude Code will ignore them",
-            file=sys.stderr,
-        )
     return replace(profile, add_dirs=merged or None)
+
+
+def missing_add_dirs(profile: Profile) -> list[str]:
+    """The profile's ``add_dirs`` that do not exist. Claude Code ignores an
+    ``--add-dir`` that does not exist, so without this the failure would be the
+    one the field exists to prevent, silently."""
+    return [d for d in profile.add_dirs or [] if not Path(d).is_dir()]
 
 
 def load_profile(name: str, repo_root: str | None = None) -> Profile:
