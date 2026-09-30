@@ -553,6 +553,7 @@ def _pause_provider(db: DB, root_id: str, provider: str, resets_at: float, why: 
     if stopped:
         note += f"; {len(stopped)} {provider} worker(s) stopped until then"
     db.update_autopilot(root_id, state="usage_paused", usage_resets_at=float(resets_at),
+                        usage_paused_ids=json.dumps([a.id for a in stopped]),
                         note=note + ".", nudges=0)
 
 
@@ -581,21 +582,27 @@ def usage_resume(db: DB, root_id: str, now: float | None = None) -> str | None:
     now = time.time() if now is None else now
     if now <= ap.usage_resets_at:
         return None
+    from copse import agents
+
     root = db.get_agent(root_id)
-    ws = db.get_workspace(root.workspace_id) if root else None
+    if root is None or root.status in ("paused", "done") or not agents.is_alive(root):
+        return None  # the session itself is stopped: `copse continue` brings it back
+    ws = db.get_workspace(root.workspace_id)
     cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
     u = usage()
     if u and u["used"] >= cfg.usage_limit:
         return None  # the fresh reading says the limit still holds
-    from copse import agents
-
-    resumed = [a for a in agents.resume(db, root_id) if a.id != root_id]
-    db.update_autopilot(root_id, state="running", note=None, usage_resets_at=None, nudges=0)
+    try:
+        ids = set(json.loads(ap.usage_paused_ids or "[]"))
+    except ValueError:
+        ids = set()
+    resumed = agents.resume(db, root_id, only=ids) if ids else []
+    db.update_autopilot(root_id, state="running", note=None, usage_resets_at=None,
+                        usage_paused_ids=None, nudges=0)
     what = (f"resumed {', '.join(a.id for a in resumed)}" if resumed
             else "no workers needed resuming")
-    if root and agents.is_alive(root):
-        agents.send_message(db, root_id, "[copse autopilot] Claude's usage window has reset, "
-                            f"so autopilot is running again: {what}.")
+    agents.send_message(db, root_id, "[copse autopilot] Claude's usage window has reset, "
+                        f"so autopilot is running again: {what}.")
     return f"usage reset for {root_id}: {what}"
 
 

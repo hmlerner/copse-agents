@@ -22,8 +22,9 @@ def session(db, repo, monkeypatch):
     monkeypatch.setattr(agents, "is_alive", lambda a, panes=None: a.status not in ("paused", "done"))
     monkeypatch.setattr(agents, "_stop", lambda db, a: stopped.append(a.id))
 
-    def fake_resume(db, root_id, **kw):
-        out = [a for a in agents.tree(db, root_id) if a.status == "paused"]
+    def fake_resume(db, root_id, only=None, **kw):
+        out = [a for a in agents.tree(db, root_id)
+               if a.status == "paused" and (only is None or a.id in only)]
         for a in out:
             db.set_status(a.id, "processing")
         resumed.extend(a.id for a in out)
@@ -143,6 +144,34 @@ def test_claude_limit_error_pauses_only_claude_workers(db, session):
     assert session.stopped == ["w1"]
     assert db.get_agent("w2").status == "processing"
     assert db.get_autopilot("boss").state == "usage_paused"
+
+
+def test_paused_session_is_not_restarted_by_the_sweep(db, session):
+    use(95)
+    autopilot.usage_sweep(db)
+    db.set_status("boss", "paused")  # the person paused the whole session
+    use(5)
+    assert autopilot.usage_sweep(db, now=RESET + 1) == []
+    assert autopilot.usage_resume(db, "boss", now=RESET + 1) is None
+    assert session.resumed == [] and session.sent == []
+    ap = db.get_autopilot("boss")
+    assert ap.state == "usage_paused" and ap.usage_paused_ids
+    # Once the session is continued, the next sweep finishes the job.
+    db.set_status("boss", "processing")
+    autopilot.usage_sweep(db, now=RESET + 1)
+    assert db.get_autopilot("boss").state == "running"
+
+
+def test_worker_paused_for_another_reason_is_left_alone(db, session):
+    ws = db.get_workspace(db.get_agent("boss").workspace_id)
+    db.add_agent(Agent("w2", ws.id, "developer", "claude", "boss", "assign",
+                       "paused", "@2", None, time.time()))
+    use(95)
+    autopilot.usage_sweep(db)
+    use(5)
+    autopilot.usage_sweep(db, now=RESET + 1)
+    assert session.resumed == ["w1"]
+    assert db.get_agent("w2").status == "paused"
 
 
 def test_sidebar_line():
