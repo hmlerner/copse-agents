@@ -167,15 +167,17 @@ def _refers_to(dep: str, t: Task) -> bool:
     return dep == t.branch or (t.agent_id is not None and dep == t.agent_id)
 
 
-def _cancel(db: DB, task_id: str, reason: str) -> None:
+def _cancel(db: DB, task_id: str, reason: str) -> list[str]:
     """Cancel a still-pending task and tell its caller, then cascade the
     cancellation to any pending task depending on it, recursively: a task
     waiting on one that can never merge can itself never merge. Re-fetches
     and checks state so cancelling the same task twice (reachable via more
-    than one dependency path) is a no-op the second time."""
+    than one dependency path) is a no-op the second time. Returns the ids
+    cancelled, the task first."""
     t = db.get_task(task_id)
     if t is None or t.state != "pending":
-        return
+        return []
+    cancelled = [t.id]
     db.update_task(t.id, state="cancelled")
     if t.caller_id:
         try:
@@ -186,7 +188,33 @@ def _cancel(db: DB, task_id: str, reason: str) -> None:
             pass
     for dependent in db.list_tasks(t.repo_root, state="pending"):
         if any(_refers_to(d, t) for d in _loads(dependent.depends_on)):
-            _cancel(db, dependent.id, f"its dependency {t.id} ({t.branch or t.id}) was cancelled")
+            cancelled += _cancel(
+                db, dependent.id, f"its dependency {t.id} ({t.branch or t.id}) was cancelled")
+    return cancelled
+
+
+def cancel(db: DB, caller: Agent | None, task_id: str, reason: str = "") -> str:
+    """Cancel a pending task on behalf of ``caller`` (its own caller, or the
+    root of its session) and say what was cancelled, dependents included.
+    Raises ``ValueError`` if the task is unknown, not the caller's, or has
+    already started."""
+    from copse import autopilot
+
+    t = db.get_task(task_id)
+    if t is None:
+        raise ValueError(f"No task {task_id}. list_tasks shows what's queued.")
+    mine = caller.id == t.caller_id if caller else t.caller_id is None
+    if not mine and caller and t.caller_id:
+        mine = autopilot.root_of(db, t.caller_id) == caller.id
+    if not mine:
+        raise ValueError(f"Task {task_id} isn't yours to cancel: only its caller or its session root can.")
+    if t.state != "pending":
+        raise ValueError(f"Task {task_id} is {t.state}, not queued: only a pending task can be cancelled.")
+    ids = _cancel(db, t.id, reason or "cancelled by its caller")
+    text = f"Cancelled task {ids[0]}."
+    if len(ids) > 1:
+        text += f" Also cancelled its dependents: {', '.join(ids[1:])}."
+    return text
 
 
 # -- queueing and starting -------------------------------------------------------

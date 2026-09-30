@@ -452,6 +452,19 @@ def list_tasks() -> str:
 
 
 @mcp.tool()
+def cancel_task(task_id: str, reason: str = "") -> str:
+    """Cancel a queued (pending) task you gave to assign/handoff, e.g. to
+    re-plan. Tasks waiting on it are cancelled too. Only the task's caller or
+    its session root can cancel it, and a task that has started can't be."""
+    db = DB()
+    caller, _ = _caller(db)
+    try:
+        return tasks.cancel(db, caller, task_id, reason)
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
 def list_agent_profiles() -> str:
     """Agent profiles available to handoff/assign."""
     db = DB()
