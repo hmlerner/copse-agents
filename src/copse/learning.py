@@ -106,16 +106,20 @@ def installed() -> list[str]:
     return sorted(e.name for e in entry_points(group=GROUP))
 
 
-def _task_files(db: DB, worker: Agent, repo_root: str) -> tuple[str, ...]:
+def _task_files(db: DB, worker: Agent, repo_root: str) -> tuple[tuple[str, ...], str | None]:
+    """The files and the weight declared for ``worker``'s task."""
     import json
 
     for t in db.list_tasks(repo_root):
-        if t.agent_id == worker.id and t.files:
-            try:
-                return tuple(f for f in json.loads(t.files) if isinstance(f, str))
-            except ValueError:
-                return ()
-    return ()
+        if t.agent_id == worker.id:
+            files: tuple[str, ...] = ()
+            if t.files:
+                try:
+                    files = tuple(f for f in json.loads(t.files) if isinstance(f, str))
+                except ValueError:
+                    pass
+            return files, t.weight
+    return (), None
 
 
 def _tokens(db: DB, worker: Agent) -> int:
@@ -136,8 +140,9 @@ def _task_info(db: DB, worker: Agent, ws: Workspace) -> TaskInfo:
         model = load_profile(worker.profile, ws.repo_root).model
     except Exception:
         pass
+    files, weight = _task_files(db, worker, ws.repo_root)
     return TaskInfo(
-        repo_root=ws.repo_root, task=worker.task or "", files=_task_files(db, worker, ws.repo_root),
+        repo_root=ws.repo_root, task=worker.task or "", files=files, weight=weight,
         agent_id=worker.id, profile=worker.profile, provider=worker.provider, model=model,
         started_at=worker.created_at,
     )

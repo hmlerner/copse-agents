@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch TEXT,
     done_when TEXT,
     files TEXT,                    -- JSON list of globs this task expects to touch
+    weight TEXT,                   -- light | medium | heavy, as the supervisor sized it
     depends_on TEXT,               -- JSON list of agent ids / branch names to wait on
     state TEXT NOT NULL,           -- pending | started | merged | cancelled
     created_at REAL NOT NULL,
@@ -419,6 +420,7 @@ class Task:
     created_at: float
     started_at: float | None = None
     plan_first: int | None = None
+    weight: str | None = None
 
 
 def _load(cls, row):
@@ -460,6 +462,8 @@ class DB:
         task_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}
         if "plan_first" not in task_cols:
             self.conn.execute("ALTER TABLE tasks ADD COLUMN plan_first INTEGER")
+        if "weight" not in task_cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN weight TEXT")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(autopilot)")}
         if "checking_since" not in cols:
             self.conn.execute("ALTER TABLE autopilot ADD COLUMN checking_since REAL")
@@ -1119,10 +1123,10 @@ class DB:
             c.execute(
                 "INSERT INTO tasks (id, repo_root, agent_id, caller_id, caller_ws_id, profile, "
                 "task_text, mode, isolate, branch, done_when, files, depends_on, state, "
-                "created_at, started_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "created_at, started_at, weight) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (t.id, t.repo_root, t.agent_id, t.caller_id, t.caller_ws_id, t.profile,
                  t.task_text, t.mode, int(t.isolate), t.branch, t.done_when, t.files,
-                 t.depends_on, t.state, t.created_at, t.started_at),
+                 t.depends_on, t.state, t.created_at, t.started_at, t.weight),
             )
 
     def get_task(self, task_id: str) -> Task | None:
