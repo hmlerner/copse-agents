@@ -269,6 +269,7 @@ def autopilot_entry(db: DB, repo_root: str | None, panes: dict[str, bool] | None
         "goal": ap.goal,
         "state": ap.state,
         "note": ap.note,
+        "usage_resets_at": ap.usage_resets_at,
         "milestones": [{"position": m.position, "title": m.title, "status": m.status,
                         "check": m.check_cmd} for m in db.milestones(root.id)],
         "usage": autopilot.usage(),
