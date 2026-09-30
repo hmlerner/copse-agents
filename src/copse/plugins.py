@@ -19,12 +19,16 @@ The entry point's object is a factory ``make(repo_root: str) -> plugin | None``,
 called once per repo per process (the result is cached). Install a plugin
 next to copse, e.g. ``uv tool install copse-agents --with <plugin>``.
 
-Selection. The learning group is opt-in: the repo config's ``learning`` key
-names the plugin, and its default ``"off"`` loads nothing. The other groups
-select themselves: when exactly one plugin is installed in the group it is
-used, so installing one package is all a repo needs. With several installed,
-or to turn one off, the repo config's ``plugins`` object names the one to
-use per group: ``"plugins": {"events": "<name>", "policy": "off"}``.
+Selection. The learning group follows the repo config's ``learning`` key:
+a plugin's name selects it, ``"off"`` loads nothing, and the default
+``"auto"`` uses copse Pro's ``cloud`` learner when the verified entitlement
+includes the ``learning`` feature and otherwise behaves as ``"off"``. The
+other groups select themselves: when exactly one plugin is installed in the
+group it is used, so installing one package is all a repo needs. With
+several installed, or to turn one off, the repo config's ``plugins`` object
+names the one to use per group: ``"plugins": {"events": "<name>", "policy":
+"off"}``. copse's own Pro plugins (``pro`` in the events, policy and account
+groups) are always installed and do nothing without an entitlement.
 
 Every plugin call is guarded: a missing, broken or slow-to-import plugin is
 logged and treated as absent, and never fails the operation copse was
@@ -47,6 +51,9 @@ ACCOUNT = "copse.account"
 GROUPS = (LEARNING, EVENTS, POLICY, ACCOUNT)
 
 OFF = "off"
+AUTO = "auto"                  # learning: "cloud" when entitled, else off
+CLOUD = "cloud"
+LEARNING_FEATURE = "learning"  # the entitlement feature that turns "auto" into "cloud"
 
 # (group, entry point name, repo root) -> the plugin, or None when it couldn't load.
 _loaded: dict[tuple[str, str, str], object | None] = {}
@@ -88,11 +95,29 @@ def load(group: str, name: str, repo_root: str) -> object | None:
     return _loaded[key]
 
 
+def auto_learning() -> str:
+    """What ``"learning": "auto"`` means right now: ``"cloud"`` when the
+    verified copse Pro entitlement includes hosted learning, else ``"off"``.
+    Fails closed (off) on any problem."""
+    try:
+        from copse.pro import license
+
+        return CLOUD if LEARNING_FEATURE in license.current().features else OFF
+    except Exception:  # noqa: BLE001 - not logged in, no entitlement, anything at all
+        return OFF
+
+
+def learning_name(cfg: RepoConfig) -> str:
+    """The learning plugin ``cfg`` selects, with ``"auto"`` resolved."""
+    name = (cfg.learning or OFF).strip()
+    return auto_learning() if name == AUTO else name
+
+
 def select(group: str, cfg: RepoConfig, repo_root: str) -> object | None:
     """The plugin the repo uses for ``group`` (see the module docstring for
     how one is chosen), or None."""
     if group == LEARNING:
-        return load(group, cfg.learning or OFF, repo_root)
+        return load(group, learning_name(cfg), repo_root)
     configured = cfg.plugins.get(short(group)) if isinstance(cfg.plugins, dict) else None
     if isinstance(configured, str) and configured.strip():
         return load(group, configured, repo_root)
@@ -114,5 +139,5 @@ def reset() -> None:
     _chosen.clear()
 
 
-__all__ = ["ACCOUNT", "EVENTS", "GROUPS", "LEARNING", "OFF", "POLICY", "installed", "load",
-           "reset", "select", "short"]
+__all__ = ["ACCOUNT", "AUTO", "CLOUD", "EVENTS", "GROUPS", "LEARNING", "OFF", "POLICY",
+           "auto_learning", "installed", "learning_name", "load", "reset", "select", "short"]

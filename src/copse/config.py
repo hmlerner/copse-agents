@@ -84,7 +84,7 @@ class RepoConfig:
     # this machine and it isn't running (see copse.native.serve).
     local_models: bool = True
     sidebar: str = "left"              # where the dashboard sits: "left" of the chat or "bottom"
-    learning: str = "off"              # "off" or an installed learning plugin's name (see copse.learning)
+    learning: str = "auto"             # "auto" (copse Pro's cloud learner when entitled, else off), "off", or an installed learning plugin's name (see copse.learning)
     learning_candidates: list[str] = field(default_factory=list)  # profiles the learner may pick from
     # Which installed plugin to use per group ("events", "policy", "account"), or "off";
     # unset: the only one installed, if exactly one (see copse.plugins).
