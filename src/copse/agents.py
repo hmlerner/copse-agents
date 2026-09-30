@@ -1248,15 +1248,21 @@ def complete_subagent(db: DB, agent_id: str, result: str) -> Agent:
     return db.get_agent(agent.id) or agent
 
 
-def report_result(db: DB, agent_id: str, result: str, forward: bool = True) -> str:
+def report_result(db: DB, agent_id: str, result: str, forward: bool = True,
+                  removed: tuple[Agent, Workspace] | None = None) -> str:
     """Record a worker's or reviewer's result. A piped worker's report goes
     to the pipeline (which reviews and merges the branch); otherwise, and
-    with ``forward``, it's sent to the parent as a message."""
+    with ``forward``, it's sent to the parent as a message. ``removed`` is a
+    reviewer and workspace the pipeline has just removed, loaded before that:
+    the result is then only recorded in the history."""
     from copse import history, pipeline, usage as usage_mod
 
-    agent = get(db, agent_id)
+    if removed and db.get_agent(agent_id) is None:
+        agent, ws = removed
+    else:
+        agent = get(db, agent_id)
+        ws = db.get_workspace(agent.workspace_id)
     db.set_result(agent.id, result)
-    ws = db.get_workspace(agent.workspace_id)
     # Usage and history are extras: never let them stop the result arriving.
     try:
         u = usage_mod.agent_usage(db, agent)
@@ -1365,7 +1371,8 @@ def submit_review(db: DB, caller_id: str, approved: bool, summary: str) -> str:
     verdict = "APPROVED" if approved else "CHANGES REQUESTED"
     text = f"Review of {ws.branch} (workspace {ws.id}) at {sha[:8]}: {verdict}\n\n{summary}"
     handled = pipeline.on_review(db, caller, ws, approved, summary)
-    report_result(db, caller.id, text, forward=not handled)
+    # A merge the pipeline just made removes this reviewer's own record.
+    report_result(db, caller.id, text, forward=not handled, removed=(caller, ws))
     close_later(caller.id)
     if handled:
         return f"Review recorded ({verdict}); copse takes it from here. You're done."

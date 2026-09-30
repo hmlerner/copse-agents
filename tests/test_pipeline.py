@@ -67,6 +67,15 @@ def test_approval_merges_and_tells_the_supervisor_once(db, piped, repo):
     assert db.get_agent("w1") is None                                # and its worker record with it
 
 
+def test_a_reviewer_submitting_an_approval_survives_the_removal(db, piped, repo):
+    root, ws, started = piped
+    agents.report_result(db, "w1", "added new.py")
+    out = agents.submit_review(db, "rev0", True, "lgtm")
+    assert "copse takes it from here" in out
+    assert "new.py" in sh("git ls-tree --name-only HEAD", repo)
+    assert db.get_workspace(ws.id) is None and db.get_agent("rev0") is None
+
+
 def test_changes_requested_go_back_to_the_worker_then_to_the_supervisor(db, piped):
     root, ws, started = piped
     agents.report_result(db, "w1", "added new.py")
