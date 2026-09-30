@@ -2,10 +2,10 @@ import time
 
 import pytest
 
-from copse import agents, autopilot, cull, watch, workspaces
+from copse import agents, autopilot, cull, quota, watch, workspaces
 from copse.db import Agent
 
-NOW = 1_000_000.0
+NOW = time.time()  # quota drops windows already past their reset, so RESET must be ahead of the real clock
 RESET = NOW + 3600
 
 
@@ -98,7 +98,7 @@ def test_still_over_limit_after_reset_time_keeps_waiting(db, session):
 def test_no_fresh_usage_resumes_after_reset(db, session):
     use(95)
     autopilot.usage_sweep(db)
-    autopilot.usage_path().unlink()
+    quota.path().unlink()
     autopilot.usage_sweep(db, now=RESET + 1)
     assert db.get_autopilot("boss").state == "running"
 
@@ -116,7 +116,7 @@ def test_cull_sweep_drives_it_and_keeps_paused_workers(db, session, monkeypatch)
     monkeypatch.setattr(cull.procs, "all_agent_ids", lambda t: [])
     monkeypatch.setattr(cull, "clean_locks", lambda db, now: 0)
     monkeypatch.setattr(cull, "note_stuck", lambda db, now, panes: [])
-    monkeypatch.setattr(cull.agents, "pane_owners", lambda db, panes: {})
+    monkeypatch.setattr(cull.agents, "pane_owners", lambda db, panes=None: {})
     use(95)
     cull.sweep(db, now=time.time())
     assert db.get_autopilot("boss").state == "usage_paused"

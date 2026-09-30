@@ -37,9 +37,8 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
-from copse.config import CONFIG_DIR, RepoConfig, config_root, copse_home, load_repo_config
+from copse.config import CONFIG_DIR, RepoConfig, config_root, load_repo_config
 from copse.db import DB, Agent, Autopilot, Milestone, Workspace
 from copse.profiles import load_profile
 
@@ -47,7 +46,6 @@ GOALS_FILE = "goals.md"
 MAX_NUDGES = 3
 MAX_GOAL_CHARS = 4000        # Claude Code's limit for a /goal condition
 OUTPUT_TAIL_LINES = 30
-USAGE_FRESH_SECONDS = 15 * 60
 
 GUIDE = """
 
@@ -493,10 +491,6 @@ def check_capacity(db: DB, caller_id: str | None, cfg: RepoConfig) -> None:
 
 
 # -- Claude usage -------------------------------------------------------------------
-
-
-def usage_path() -> Path:
-    return copse_home() / "usage.json"
 
 
 def record_usage(status: dict) -> None:
