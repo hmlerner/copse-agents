@@ -11,7 +11,7 @@ import time
 
 from mcp.server.mcpserver import MCPServer
 
-from copse import agents, autopilot, codemap, gates, git, history, pipeline, quota, sessions, tasks, workspaces
+from copse import agents, autopilot, codemap, gates, git, history, pipeline, policy, quota, sessions, tasks, workspaces
 from copse.config import RepoConfig, load_repo_config
 from copse.db import DB, Agent, Workspace
 from copse.profiles import list_profiles
@@ -54,6 +54,26 @@ def _ws(db: DB, ref: str) -> Workspace:
 
 
 _busy_worker = pipeline.busy_worker
+
+
+def _running_workers(db: DB, repo_root: str) -> int | None:
+    try:
+        return policy.running_workers(db, repo_root)
+    except Exception:
+        return None
+
+
+def _policy_refusal(db: DB, caller: Agent | None, ws: Workspace, profile: str, task: str, mode: str,
+                    files: list[str] | None, weight: str | None, branch: str | None) -> str | None:
+    """The reply when the repo's policy plugin refuses this delegation, else None."""
+    verdict = policy.check_assign(
+        load_repo_config(ws.repo_root), ws.repo_root, profile, task, mode,
+        files=files, weight=weight, branch=branch, actor=caller,
+        running_workers=_running_workers(db, ws.repo_root),
+    )
+    if verdict.allowed:
+        return None
+    return f"Not started: the repo's policy refused it: {verdict.reason}"
 
 
 def _summary(db: DB, ws: Workspace) -> str:
@@ -215,6 +235,9 @@ async def handoff(
                 db, caller.id, ws.repo_root, agent_profile, task, files, weight, why)
         except autopilot.AutopilotError as e:
             return str(e)
+        refused = _policy_refusal(db, caller, ws, profile, task, "handoff", files, weight, branch)
+        if refused:
+            return refused
         try:
             unmet = tasks.unmet_dependencies(db, ws, depends_on)
         except agents.AgentError as e:
@@ -313,6 +336,9 @@ async def assign(
                 db, caller.id, ws.repo_root, agent_profile, task, files, weight, why)
         except autopilot.AutopilotError as e:
             return str(e)
+        refused = _policy_refusal(db, caller, ws, profile, task, "assign", files, weight, branch)
+        if refused:
+            return refused
         try:
             unmet = tasks.unmet_dependencies(db, ws, depends_on)
         except agents.AgentError as e:
@@ -593,6 +619,7 @@ def remove_workspace(workspace: str, delete_branch: bool = False, force: bool = 
     workspace's branch and it still had unmerged commits, that task is
     cancelled and its caller is told."""
     db = DB()
+    caller, _ = _caller(db)
     ws = _ws(db, workspace)
     unmerged = False
     if ws.kind == "worktree" and ws.base_branch and os.path.isdir(ws.path):
@@ -603,7 +630,9 @@ def remove_workspace(workspace: str, delete_branch: bool = False, force: bool = 
             pass
     if unmerged:
         tasks.on_removed_unmerged(db, ws)
-        pipeline.note_removed_unmerged(db, ws)
+        pipeline.note_removed_unmerged(db, ws, actor=caller)
+    else:
+        pipeline.note_removed_merged(db, ws, actor=caller)
     removed = workspaces.remove(db, ws, force=force, delete_branch=delete_branch)
     return f"Removed {ws.id}. {removed.branch_note or 'branch deleted'}"
 
