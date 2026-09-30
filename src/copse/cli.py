@@ -633,14 +633,22 @@ def learning(
         typer.echo("not in a git repo")
         raise typer.Exit(1)
     cfg = load_repo_config(repo_root)
-    if cfg.learning == "off":
+    from copse import plugins
+
+    name = plugins.learning_name(cfg)
+    if name == plugins.OFF:
         found = learning_mod.installed()
-        typer.echo('learning is off. Set "learning" in .copse/config.json to a plugin\'s name'
-                   + (f" (installed: {', '.join(found)})." if found else "; no learning plugin is installed."))
+        if cfg.learning == plugins.AUTO:
+            typer.echo("learning is off: hosted learning needs a copse Pro plan that includes it "
+                       "(`copse account status`). Or set \"learning\" in .copse/config.json to an "
+                       "installed plugin's name" + (f" ({', '.join(found)})." if found else "."))
+        else:
+            typer.echo('learning is off. Set "learning" in .copse/config.json to a plugin\'s name'
+                       + (f" (installed: {', '.join(found)})." if found else "; no learning plugin is installed."))
         return
     p = learning_mod.plugin(cfg, repo_root)
     if p is None:
-        typer.echo(f"no learning plugin named {cfg.learning!r} is installed")
+        typer.echo(f"no learning plugin named {name!r} is installed")
         raise typer.Exit(1)
     typer.echo(p.report(reset=reset))
 

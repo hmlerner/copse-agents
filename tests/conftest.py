@@ -92,7 +92,15 @@ def copse_home(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@example.com")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@example.com")
-    return home
+    # copse's own Pro plugins are always installed: keep them off the real
+    # keychain and network (a file store under the temporary home, no login).
+    monkeypatch.setenv("COPSE_PRO_CREDENTIAL_STORE", "file")
+    monkeypatch.delenv("COPSE_PRO_DEV", raising=False)
+    from copse.pro import license
+
+    license.clear_cache()
+    yield home
+    license.clear_cache()
 
 
 @pytest.fixture(autouse=True)
