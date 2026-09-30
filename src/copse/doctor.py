@@ -67,6 +67,7 @@ def checks(repo_root: str | None) -> list[Check]:
                      "no pbcopy, wl-copy or xclip: mouse selection copies only within tmux"))
 
     out.extend(native_checks(repo_root))
+    out.extend(quota_checks(repo_root))
 
     home = config.copse_home()
     try:
@@ -206,6 +207,21 @@ def native_checks(repo_root: str | None) -> list[Check]:
                              f"{ep.base_url} runs {ep.model} with a {ctx}-token context, less than "
                              f"the profile's context_tokens ({max_context_tokens}); Ollama truncates "
                              f"silently. Restart with: {fix}"))
+    return out
+
+
+def quota_checks(repo_root: str | None) -> list[Check]:
+    """One line per provider that has quota data (a warning past 90% used or
+    while limited). The local model server has its own checks above."""
+    from copse import quota
+
+    out = []
+    for p in quota.PROVIDERS:
+        if p == "native":
+            continue
+        n = quota.note(p)
+        if n:
+            out.append(Check(WARN if quota.headroom(p) <= 10 else OK, f"{p} quota", n))
     return out
 
 

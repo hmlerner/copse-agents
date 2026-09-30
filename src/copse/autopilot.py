@@ -37,9 +37,8 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
-from copse.config import CONFIG_DIR, RepoConfig, config_root, copse_home, load_repo_config
+from copse.config import CONFIG_DIR, RepoConfig, config_root, load_repo_config
 from copse.db import DB, Agent, Autopilot, Milestone, Workspace
 from copse.profiles import load_profile
 
@@ -47,7 +46,6 @@ GOALS_FILE = "goals.md"
 MAX_NUDGES = 3
 MAX_GOAL_CHARS = 4000        # Claude Code's limit for a /goal condition
 OUTPUT_TAIL_LINES = 30
-USAGE_FRESH_SECONDS = 15 * 60
 
 GUIDE = """
 
@@ -601,42 +599,24 @@ def check_capacity(db: DB, caller_id: str | None, cfg: RepoConfig) -> None:
 # -- Claude usage -------------------------------------------------------------------
 
 
-def usage_path() -> Path:
-    return copse_home() / "usage.json"
-
-
 def record_usage(status: dict) -> None:
     """Keep the plan usage Claude Code gives its status line (Claude.ai
     subscriptions only)."""
-    limits = status.get("rate_limits")
-    if not isinstance(limits, dict):
-        return
-    data = {"updated_at": time.time()}
-    for window in ("five_hour", "seven_day"):
-        w = limits.get(window)
-        if isinstance(w, dict) and isinstance(w.get("used_percentage"), (int, float)):
-            data[window] = {"used": float(w["used_percentage"]), "resets_at": w.get("resets_at")}
-    if len(data) > 1:
-        path = usage_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.replace(path)
+    from copse import quota
+
+    quota.record_claude(status)
 
 
 def usage() -> dict | None:
     """The fullest recent usage window: {"window", "used", "resets_at"}, or None."""
-    try:
-        data = json.loads(usage_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    from copse import quota
+
+    q = quota.get("claude")
+    w = quota.fullest(q) if q else None
+    if w is None:
         return None
-    if time.time() - data.get("updated_at", 0) > USAGE_FRESH_SECONDS:
-        return None
-    windows = [(k, v) for k, v in data.items() if isinstance(v, dict)]
-    if not windows:
-        return None
-    name, w = max(windows, key=lambda kv: kv[1].get("used", 0))
-    return {"window": name, "used": w.get("used", 0), "resets_at": w.get("resets_at")}
+    name = "five_hour" if w.minutes == 300 else "seven_day"
+    return {"window": name, "used": w.used, "resets_at": w.resets_at}
 
 
 def usage_note(u: dict) -> str:

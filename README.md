@@ -316,6 +316,23 @@ capped at 5000 rows per repo, oldest dropped first. Recording usage or
 history never blocks a report, merge or check: a failure there is logged and
 skipped.
 
+## Provider quota
+
+copse keeps one place (`~/.copse/quota.json`) that knows how close each
+provider is to its subscription limit, and shows a note per provider that has
+data (e.g. `Codex at 82% of its weekly limit, resets Thu 9:00am`) in `assign`
+replies, `get_progress`, the sidebar's autopilot block and `copse doctor`.
+It only uses what the CLIs write locally, and never reads a CLI's login
+token or auth files or calls a provider's servers:
+
+- **Claude**: the status line data Claude Code gives copse.
+- **Codex**: the last `rate_limits` event in its newest session rollout under
+  `~/.codex/sessions` (windows are told apart by their length: 5-hour,
+  weekly, monthly), refreshed on each turn and when asked.
+- **Antigravity**: no numbers; when it reports a limit error the provider counts
+  as unavailable for `limit_cooldown_minutes` (default 300).
+- **Native**: full headroom while the local model server answers, none while it doesn't.
+
 ## Repo config: `.copse/config.json`
 
 A linked git worktree you made yourself doesn't have the git-ignored parts of
@@ -350,6 +367,7 @@ Autopilot, merge gates and cleanup:
 | `max_agents` | `4` | workers running at once per session (`0`: no cap) |
 | `check_timeout` | `900` | seconds each check may take |
 | `usage_limit` | `90` | autopilot stops pushing on at this % of your Claude usage limit |
+| `limit_cooldown_minutes` | `300` for Antigravity | how long a provider that hit its limit counts as unavailable |
 | `graphify` | if the graph is there | point agents at the repo's [graphify](https://github.com/safishamsi/graphify) code map (`false` turns it off) |
 | `stale_after` | `30` | minutes before a worker that reported and sat idle is closed (`0`: never) |
 | `pipeline` | `true` | copse reviews and merges reported branches itself; the supervisor gets one message per branch |
