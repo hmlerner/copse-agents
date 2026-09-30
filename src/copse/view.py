@@ -252,7 +252,7 @@ def autopilot_entry(db: DB, repo_root: str | None, panes: dict[str, bool] | None
     ``repo_root``, for the sidebar. ``panes`` should be the same
     ``tmux.list_panes()`` result passed to ``snapshot`` for this refresh, so
     liveness isn't checked with a second tmux subprocess."""
-    from copse import autopilot
+    from copse import autopilot, quota
 
     if not repo_root:
         return None
@@ -272,5 +272,6 @@ def autopilot_entry(db: DB, repo_root: str | None, panes: dict[str, bool] | None
         "milestones": [{"position": m.position, "title": m.title, "status": m.status,
                         "check": m.check_cmd} for m in db.milestones(root.id)],
         "usage": autopilot.usage(),
+        "quota": quota.notes(repo_root, native=False),
         "workers": len(autopilot.working_workers(db, root.id)),
     }

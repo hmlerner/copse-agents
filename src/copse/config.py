@@ -56,6 +56,7 @@ class RepoConfig:
     max_agents: int = 4                # workers running at once per session; 0 means no cap
     check_timeout: int = 900           # seconds allowed for each check command
     usage_limit: int = 90              # autopilot stops pushing on at this % of the Claude usage limit
+    limit_cooldown_minutes: int | None = None  # how long a provider that hit its limit counts as unavailable (default 300 for Antigravity)
     graphify: bool | None = None       # point agents at graphify-out/graph.json (None: if it's there)
     stale_after: int = 30              # minutes before an idle, reported worker is closed; 0: never
     pipeline: bool = True              # copse reviews and merges reported branches itself (copse.pipeline)
@@ -130,7 +131,7 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
                 "usage_limit", "pool_size", "graphify", "stale_after", "pipeline",
                 "review_rounds", "overlap", "local_models", "merge_into",
                 "auto_merge_default_branch", "sidebar", "plan_first", "learning",
-                "learning_candidates"):
+                "learning_candidates", "limit_cooldown_minutes"):
         if key in local:
             setattr(cfg, key, local[key])
         elif key in shared:

@@ -11,7 +11,7 @@ import time
 
 from mcp.server.mcpserver import MCPServer
 
-from copse import agents, autopilot, codemap, gates, git, history, pipeline, sessions, tasks, workspaces
+from copse import agents, autopilot, codemap, gates, git, history, pipeline, quota, sessions, tasks, workspaces
 from copse.config import RepoConfig, load_repo_config
 from copse.db import DB, Agent, Workspace
 from copse.profiles import list_profiles
@@ -322,9 +322,8 @@ async def assign(
         for w in (warning, agents.add_dirs_warning(worker, wws)):
             if w:
                 text += f"\nWarning: {w}"
-        u = autopilot.usage()
-        if u and u["used"] >= load_repo_config(wws.repo_root).usage_limit - 15:
-            text += f"\nNote: {autopilot.usage_note(u)}."
+        for n in quota.notes(wws.repo_root):
+            text += f"\nNote: {n}."
         return text
 
     return await asyncio.to_thread(run)
@@ -629,7 +628,10 @@ def get_progress() -> str:
     """Autopilot: the goal, each milestone with its check and last result."""
     db = DB()
     found = _session(db)
-    return found if isinstance(found, str) else autopilot.progress(db, found[0])
+    if isinstance(found, str):
+        return found
+    text = autopilot.progress(db, found[0])
+    return "\n".join([text, *(f"Note: {n}." for n in quota.notes(found[1].repo_root))])
 
 
 @mcp.tool()
