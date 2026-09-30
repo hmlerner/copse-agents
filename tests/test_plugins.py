@@ -361,6 +361,14 @@ def test_policy_deny_blocks_the_pipelines_own_merge(db, piped, monkeypatch):
     assert Path(ws.path).is_dir()
 
 
+def test_the_policy_sees_how_many_workers_are_running(db, repo, boss, monkeypatch):
+    gate = install_one(monkeypatch, plugins.POLICY, Gate())
+    monkeypatch.setattr(agents, "spawn", fake_spawn)
+    assert "Started worker" in asyncio.run(mcp_server.assign(task="do A", branch="feat-a"))
+    assert "Started worker" in asyncio.run(mcp_server.assign(task="do B", branch="feat-b"))
+    assert [i.running_workers for i in gate.seen] == [0, 1]
+
+
 def test_a_broken_policy_plugin_refuses(db, repo, boss, monkeypatch):
     install_one(monkeypatch, plugins.POLICY, Gate(fail=True))
     monkeypatch.setattr(agents, "spawn", fake_spawn)

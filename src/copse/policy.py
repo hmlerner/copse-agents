@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from copse import plugins
 from copse.config import RepoConfig
-from copse.db import Agent, Workspace
+from copse.db import DB, Agent, Workspace
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ class AssignInfo:
     mode: str = "assign"
     branch: str | None = None
     actor: str | None = None
+    running_workers: int | None = None  # this repo's workers still at work, before this one
 
 
 @dataclass(frozen=True)
@@ -131,16 +132,30 @@ def _profile_fields(profile: str | None, repo_root: str) -> tuple[str | None, st
 
 def check_assign(cfg: RepoConfig, repo_root: str, profile: str, task: str, mode: str, *,
                  files: list[str] | None = None, weight: str | None = None,
-                 branch: str | None = None, actor: Agent | None = None) -> Decision:
+                 branch: str | None = None, actor: Agent | None = None,
+                 running_workers: int | None = None) -> Decision:
     """The plugin's decision on starting ``task`` with ``profile`` (allow
     without a plugin)."""
     provider, model = _profile_fields(profile, repo_root)
     info = AssignInfo(
         repo_root=repo_root, task=task, files=tuple(files or ()), weight=weight,
         profile=profile, provider=provider, model=model, mode=mode, branch=branch,
-        actor=actor.id if actor else "user",
+        actor=actor.id if actor else "user", running_workers=running_workers,
     )
     return _decide("delegation", cfg, repo_root, lambda p: p.check_assign(info))
+
+
+def running_workers(db: DB, repo_root: str) -> int:
+    """How many of ``repo_root``'s workers are still at work (not paused,
+    done or dismissed, and not reviewers)."""
+    from copse import agents
+
+    roots = {w.id: w.repo_root for w in (db.get_workspace(a.workspace_id) for a in db.list_agents())
+             if w is not None}
+    return sum(1 for a in db.list_agents()
+               if roots.get(a.workspace_id) == repo_root and a.parent_id
+               and a.mode in agents.REPORTING_MODES and a.mode != "review"
+               and a.status not in ("paused", "done") and a.dismissed_at is None)
 
 
 def check_merge(cfg: RepoConfig, ws: Workspace, worker: Agent | None,
@@ -158,4 +173,4 @@ def check_merge(cfg: RepoConfig, ws: Workspace, worker: Agent | None,
 
 
 __all__ = ["GROUP", "AssignInfo", "Decision", "MergeInfo", "PolicyPlugin", "allow",
-           "check_assign", "check_merge", "deny", "plugin"]
+           "check_assign", "check_merge", "deny", "plugin", "running_workers"]
