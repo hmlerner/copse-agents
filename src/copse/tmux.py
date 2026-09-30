@@ -10,6 +10,8 @@ import time
 import uuid
 from pathlib import Path
 
+from copse import __version__
+
 
 class TmuxError(RuntimeError):
     pass
@@ -82,8 +84,11 @@ def apply_theme(session: str) -> None:
     t = THEME
     opts = {
         "status-style": f"bg={t['bg2']},fg={t['muted2']}",
-        "status-left": f"#[bg={t['accent']},fg={t['text']},bold] copse #[bg={t['bg2']},fg={t['accent']}] ",
-        "status-left-length": "20",
+        # Which copse runs this session: one started before an upgrade keeps
+        # running the old code until it is restarted.
+        "status-left": (f"#[bg={t['accent']},fg={t['text']},bold] copse "
+                        f"#[bg={t['bg2']},fg={t['muted2']},nobold] {__version__} "),
+        "status-left-length": "32",
         "status-right": f"#[fg={t['muted']}]#{{session_name}}  %H:%M ",
         "status-right-length": "60",
         "window-status-format": f"#[fg={t['muted']}] #W ",

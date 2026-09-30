@@ -425,3 +425,11 @@ def test_sidebar_follow_hook_command_exits_zero_on_a_bogus_session(copse_home):
         capture_output=True, text=True,
     )
     assert proc.returncode == 0
+
+
+def test_apply_theme_shows_the_version_in_the_status_bar(session):
+    from copse import __version__
+
+    tmux.apply_theme(session)
+    left = tmux._tmux("show-options", "-v", "-t", session, "status-left").stdout
+    assert "copse" in left and __version__ in left
