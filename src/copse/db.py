@@ -84,7 +84,8 @@ CREATE TABLE IF NOT EXISTS autopilot (
     nudges INTEGER NOT NULL DEFAULT 0,      -- "keep going" nudges since the last progress
     nudged_at INTEGER,             -- the progress count at the last nudge
     checking_since REAL,           -- a milestone check is running in the background
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    goals_file TEXT                -- the goals.md the goal was loaded from; milestone status is synced back to it
 );
 CREATE TABLE IF NOT EXISTS milestones (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -305,6 +306,7 @@ class Autopilot:
     nudged_at: int | None
     created_at: float
     checking_since: float | None = None
+    goals_file: str | None = None      # the goals.md this session's goal was loaded from (status is written back)
 
 
 @dataclass
@@ -453,6 +455,8 @@ class DB:
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(autopilot)")}
         if "checking_since" not in cols:
             self.conn.execute("ALTER TABLE autopilot ADD COLUMN checking_since REAL")
+        if "goals_file" not in cols:
+            self.conn.execute("ALTER TABLE autopilot ADD COLUMN goals_file TEXT")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(milestones)")}
         for col in ("checked_sha", "passed_sha", "profile"):
             if col not in cols:

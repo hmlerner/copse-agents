@@ -212,6 +212,19 @@ check: npm test -- settings
 profile: developer-cheap
 ```
 
+A session that loaded its goal from `goals.md` writes each milestone's status
+back to that file after every check, as a line under the milestone, for
+example `status: passed at abc1234 (2026-09-29)` (`passed`, `failed` or
+`pending`, a short commit sha and a date). The rest of the file is left byte
+for byte as you wrote it. Since `goals.md` may be committed, it stays free of
+session data: no agent or session ids, check output, notes, usage or
+questions ever go in. A status line is information only: a new session
+starts every milestone as pending and re-runs the checks, never trusting it.
+A session stops writing when it's handed over, paused, or has autopilot off,
+or once its goal was replaced from the chat. From a linked worktree, it writes
+the `goals.md` it loaded (the main checkout's), never another session's. A
+write that fails never fails the check.
+
 `copse autopilot` shows progress, `copse autopilot check` runs the checks
 now, and `copse autopilot off` (or `on`) hands the wheel back (or takes it
 again). `copse --no-autopilot`, or `"autopilot": false` in the repo config,
