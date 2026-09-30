@@ -210,14 +210,25 @@ def set_goal(db: DB, root_id: str, goal: str,
     db.bump_progress(root_id)
 
 
-def resolve_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None) -> str:
-    """The worker profile for a delegation: ``requested`` if given, else the
-    first unverified milestone's profile in the caller's session, else the
-    repo's ``default_agent``. Raises AutopilotError if it doesn't exist."""
+def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None,
+                   task: str | None = None, files: list[str] | None = None) -> tuple[str, bool]:
+    """The worker profile for a delegation, and whether learning chose it:
+    ``requested`` if given, else the first unverified milestone's profile in
+    the caller's session, else (with a learning plugin selected) the plugin's
+    pick for this task, else the repo's ``default_agent``. Raises
+    AutopilotError if it doesn't exist."""
     name = (requested or "").strip()
+    learned = False
     if not name:
         pending = next((m for m in db.milestones(root_of(db, caller_id)) if m.status != "passed"), None)
-        name = (pending.profile if pending else None) or load_repo_config(repo_root).default_agent
+        name = (pending.profile if pending else None) or ""
+    if not name:
+        from copse import learning
+
+        cfg = load_repo_config(repo_root)
+        name = learning.choose(db, cfg, repo_root, task, files) or ""
+        learned = bool(name)
+        name = name or cfg.default_agent
     try:
         load_profile(name, repo_root)
     except KeyError:
@@ -225,7 +236,13 @@ def resolve_profile(db: DB, caller_id: str, repo_root: str, requested: str | Non
             f"no agent profile named {name!r}; see list_agent_profiles, "
             "or pass agent_profile explicitly"
         ) from None
-    return name
+    return name, learned
+
+
+def resolve_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None,
+                    task: str | None = None, files: list[str] | None = None) -> str:
+    """``choose_profile`` without the learned flag."""
+    return choose_profile(db, caller_id, repo_root, requested, task, files)[0]
 
 
 def need_user(db: DB, root_id: str, question: str) -> None:

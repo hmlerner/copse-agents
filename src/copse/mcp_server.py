@@ -203,7 +203,7 @@ async def handoff(
         if not task.strip():
             return "Give the worker a task."
         try:
-            profile = autopilot.resolve_profile(db, caller.id, ws.repo_root, agent_profile)
+            profile = autopilot.resolve_profile(db, caller.id, ws.repo_root, agent_profile, task, files)
         except autopilot.AutopilotError as e:
             return str(e)
         try:
@@ -287,7 +287,8 @@ async def assign(
         if not task.strip():
             return "Give the worker a task."
         try:
-            profile = autopilot.resolve_profile(db, caller.id, ws.repo_root, agent_profile)
+            profile, learned = autopilot.choose_profile(
+                db, caller.id, ws.repo_root, agent_profile, task, files)
         except autopilot.AutopilotError as e:
             return str(e)
         try:
@@ -316,6 +317,8 @@ async def assign(
         if not agents.runs_process(worker):
             return agents.subagent_brief(worker, wws)
         text = f"Started worker {worker.id} ({worker.profile}) in workspace {wws.id} on branch {wws.branch}."
+        if learned:
+            text += f"\nprofile chosen by learning: {profile}"
         for w in (warning, agents.add_dirs_warning(worker, wws)):
             if w:
                 text += f"\nWarning: {w}"
@@ -547,6 +550,7 @@ def remove_workspace(workspace: str, delete_branch: bool = False, force: bool = 
             pass
     if unmerged:
         tasks.on_removed_unmerged(db, ws)
+        pipeline.note_removed_unmerged(db, ws)
     removed = workspaces.remove(db, ws, force=force, delete_branch=delete_branch)
     return f"Removed {ws.id}. {removed.branch_note or 'branch deleted'}"
 

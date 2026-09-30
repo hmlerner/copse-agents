@@ -1311,6 +1311,7 @@ def submit_review(db: DB, caller_id: str, approved: bool, summary: str) -> str:
     db.add_review(ws.id, sha, caller.id, approved, summary)
     if approved:
         db.bump_progress(autopilot.root_of(db, caller.id))
+    pipeline.note_review(db, ws, approved)
     verdict = "APPROVED" if approved else "CHANGES REQUESTED"
     text = f"Review of {ws.branch} (workspace {ws.id}) at {sha[:8]}: {verdict}\n\n{summary}"
     handled = pipeline.on_review(db, caller, ws, approved, summary)
