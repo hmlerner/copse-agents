@@ -226,8 +226,12 @@ async def handoff(
         )
         if not agents.runs_process(worker):
             return agents.subagent_brief(worker, wws)
+        missing = agents.add_dirs_warning(worker, wws)
         result = _await_worker(db, worker.id, wait_seconds)
-        return f"{result}\n\nWarning: {warning}" if warning else result
+        for w in (warning, missing):
+            if w:
+                result += f"\n\nWarning: {w}"
+        return result
 
     return await asyncio.to_thread(run)
 
@@ -303,8 +307,9 @@ async def assign(
         if not agents.runs_process(worker):
             return agents.subagent_brief(worker, wws)
         text = f"Started worker {worker.id} ({worker.profile}) in workspace {wws.id} on branch {wws.branch}."
-        if warning:
-            text += f"\nWarning: {warning}"
+        for w in (warning, agents.add_dirs_warning(worker, wws)):
+            if w:
+                text += f"\nWarning: {w}"
         u = autopilot.usage()
         if u and u["used"] >= load_repo_config(wws.repo_root).usage_limit - 15:
             text += f"\nNote: {autopilot.usage_note(u)}."

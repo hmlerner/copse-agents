@@ -273,10 +273,12 @@ def on_merged(db: DB, ws: Workspace) -> None:
             continue
         if t.caller_id:
             try:
-                agents.send_message(
-                    db, t.caller_id, f"Started {new_worker.id} (was waiting on {dep_ref}).",
-                    sender_id=None,
-                )
+                text = f"Started {new_worker.id} (was waiting on {dep_ref})."
+                new_ws = db.get_workspace(new_worker.workspace_id)
+                warning = agents.add_dirs_warning(new_worker, new_ws) if new_ws else None
+                if warning:
+                    text += f"\nWarning: {warning}"
+                agents.send_message(db, t.caller_id, text, sender_id=None)
             except agents.AgentError:
                 pass
 

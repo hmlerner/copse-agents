@@ -120,6 +120,17 @@ def checks(repo_root: str | None) -> list[Check]:
                 out.append(Check(WARN, "checks",
                                  "none configured: nothing verifies a branch before it merges. "
                                  'Add e.g. {"checks": ["uv run pytest -q"]} to .copse/config.json'))
+            if cfg.add_dirs:
+                from copse.profiles import load_profile, missing_add_dirs
+                # The repo's entries as any profile gets them: resolved, ~ expanded.
+                profile = load_profile("developer", repo_root)
+                missing = missing_add_dirs(profile)
+                if missing:
+                    out.append(Check(WARN, "add_dirs",
+                                     f"{', '.join(missing)} not found: Claude Code ignores a "
+                                     "missing --add-dir, so agents won't reach it"))
+                else:
+                    out.append(Check(OK, "add_dirs", ", ".join(profile.add_dirs or [])))
             if (Path(repo_root) / "graphify-out" / "graph.json").is_file():
                 out.append(Check(OK, "code map", "graphify-out/graph.json"))
             else:

@@ -293,3 +293,46 @@ def test_new_task_depending_on_an_already_cancelled_task_fails_clearly(db, repo,
     assert "cancelled" in out_d.lower() and "feat-b" in out_d
     # D was neither started nor queued: unmet_dependencies failed before either.
     assert not any(t.branch == "feat-d" for t in db.list_tasks(str(repo)))
+
+
+# -- a missing add_dirs entry reaches the supervisor ---------------------------
+
+
+def _missing_add_dir(repo):
+    (repo / ".copse" / "config.json").write_text(
+        '{"overlap": "warn", "pipeline": false, "add_dirs": ["/no/such/cache"]}')
+
+
+def test_assign_reply_names_a_missing_add_dir(db, repo, boss):
+    """The launch's stderr belongs to the MCP server, which nobody reads: the
+    supervisor only learns about a missing add_dirs entry from the reply."""
+    _missing_add_dir(repo)
+    out = asyncio.run(mcp_server.assign("developer", "do A", branch="feat-a"))
+    assert "Warning: add_dirs names /no/such/cache" in out
+
+
+def test_handoff_reply_names_a_missing_add_dir(db, repo, boss, monkeypatch):
+    monkeypatch.setattr(agents, "is_alive", lambda a: True)
+    _missing_add_dir(repo)
+    out = asyncio.run(mcp_server.handoff("developer", "do A", branch="feat-a", wait_seconds=0))
+    assert "Warning: add_dirs names /no/such/cache" in out
+
+
+def test_no_add_dirs_warning_when_they_exist(db, repo, boss):
+    out = asyncio.run(mcp_server.assign("developer", "do A", branch="feat-a"))
+    assert "add_dirs" not in out
+
+
+def test_a_queued_task_starting_names_a_missing_add_dir(db, repo, boss, monkeypatch):
+    monkeypatch.setattr(agents, "is_alive", lambda a: True)
+    out_a = asyncio.run(mcp_server.assign("developer", "do A", branch="feat-a"))
+    worker_a = started_worker_id(out_a)
+    ws_a = next(w for w in db.find_workspaces(str(repo)) if w.branch == "feat-a")
+    commit_file(Path(ws_a.path), "a_output.txt")
+    asyncio.run(mcp_server.assign("developer", "do B", branch="feat-b", depends_on=[worker_a]))
+    _missing_add_dir(repo)
+
+    asyncio.run(mcp_server.merge_workspace(ws_a.id))
+
+    msg = db.pop_pending("boss")
+    assert "Started" in msg.body and "add_dirs names /no/such/cache" in msg.body
