@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS inbox (
     sender_id TEXT,
     body TEXT NOT NULL,
     created_at REAL NOT NULL,
-    delivered_at REAL
+    delivered_at REAL,
+    held INTEGER,                  -- 1: a pull-mode message, read with read_messages instead of being delivered
+    noticed_at REAL                -- when a "new messages" notice covering it went out
 );
 -- Autopilot: one row per session (keyed by its supervisor) that has it on.
 CREATE TABLE IF NOT EXISTS autopilot (
@@ -78,13 +80,16 @@ CREATE TABLE IF NOT EXISTS autopilot (
     enabled INTEGER NOT NULL DEFAULT 1,
     goal TEXT,                     -- NULL until the user says what we're building
     detail TEXT,
-    state TEXT NOT NULL DEFAULT 'running',  -- running | blocked | stalled | done
+    state TEXT NOT NULL DEFAULT 'running',  -- running | blocked | stalled | usage_paused | done
     note TEXT,                     -- why it's blocked or stalled
     progress INTEGER NOT NULL DEFAULT 0,    -- bumped whenever real progress happens
     nudges INTEGER NOT NULL DEFAULT 0,      -- "keep going" nudges since the last progress
     nudged_at INTEGER,             -- the progress count at the last nudge
     checking_since REAL,           -- a milestone check is running in the background
-    created_at REAL NOT NULL
+    usage_resets_at REAL,          -- when state is usage_paused: the usage window's reset time
+    usage_paused_ids TEXT,         -- JSON list of the workers stopped for usage
+    created_at REAL NOT NULL,
+    goals_file TEXT                -- the goals.md the goal was loaded from; milestone status is synced back to it
 );
 CREATE TABLE IF NOT EXISTS milestones (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,6 +210,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch TEXT,
     done_when TEXT,
     files TEXT,                    -- JSON list of globs this task expects to touch
+    weight TEXT,                   -- light | medium | heavy, as the supervisor sized it
     depends_on TEXT,               -- JSON list of agent ids / branch names to wait on
     state TEXT NOT NULL,           -- pending | started | merged | cancelled
     created_at REAL NOT NULL,
@@ -288,6 +294,8 @@ class Agent:
     pipeline: str | None = None
     pipeline_rounds: int | None = None
     stuck_noted: float | None = None
+    plan_first: int | None = None      # must get its plan approved before editing (copse.agents.submit_plan)
+    plan_state: str | None = None      # proposed | approved | revise
 
 
 @dataclass
@@ -303,6 +311,9 @@ class Autopilot:
     nudged_at: int | None
     created_at: float
     checking_since: float | None = None
+    usage_resets_at: float | None = None
+    usage_paused_ids: str | None = None
+    goals_file: str | None = None      # the goals.md this session's goal was loaded from (status is written back)
 
 
 @dataclass
@@ -386,6 +397,8 @@ class Message:
     body: str
     created_at: float
     delivered_at: float | None
+    held: int | None = None
+    noticed_at: float | None = None
 
 
 @dataclass
@@ -406,6 +419,8 @@ class Task:
     state: str
     created_at: float
     started_at: float | None = None
+    plan_first: int | None = None
+    weight: str | None = None
 
 
 def _load(cls, row):
@@ -441,9 +456,23 @@ class DB:
                           ("pipeline", "TEXT"), ("pipeline_rounds", "INTEGER")):
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {kind}")
+        for col, kind in (("plan_first", "INTEGER"), ("plan_state", "TEXT")):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {kind}")
+        task_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}
+        if "plan_first" not in task_cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN plan_first INTEGER")
+        if "weight" not in task_cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN weight TEXT")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(autopilot)")}
         if "checking_since" not in cols:
             self.conn.execute("ALTER TABLE autopilot ADD COLUMN checking_since REAL")
+        if "goals_file" not in cols:
+            self.conn.execute("ALTER TABLE autopilot ADD COLUMN goals_file TEXT")
+        if "usage_resets_at" not in cols:
+            self.conn.execute("ALTER TABLE autopilot ADD COLUMN usage_resets_at REAL")
+        if "usage_paused_ids" not in cols:
+            self.conn.execute("ALTER TABLE autopilot ADD COLUMN usage_paused_ids TEXT")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(milestones)")}
         for col in ("checked_sha", "passed_sha", "profile"):
             if col not in cols:
@@ -454,6 +483,10 @@ class DB:
         mark_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(history_usage_mark)")}
         if "transcript_path" not in mark_cols:
             self.conn.execute("ALTER TABLE history_usage_mark ADD COLUMN transcript_path TEXT")
+        inbox_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(inbox)")}
+        for col, kind in (("held", "INTEGER"), ("noticed_at", "REAL")):
+            if col not in inbox_cols:
+                self.conn.execute(f"ALTER TABLE inbox ADD COLUMN {col} {kind}")
         tables = {r["name"] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "sidebars" not in tables:
             self.conn.execute(
@@ -695,7 +728,7 @@ class DB:
         with self.tx() as c:
             row = c.execute(
                 "SELECT * FROM inbox WHERE agent_id=? AND delivered_at IS NULL "
-                "ORDER BY id LIMIT 1",
+                "AND COALESCE(held,0)=0 ORDER BY id LIMIT 1",
                 (agent_id,),
             ).fetchone()
             if not row:
@@ -731,9 +764,78 @@ class DB:
 
     def pending_count(self, agent_id: str) -> int:
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM inbox WHERE agent_id=? AND delivered_at IS NULL", (agent_id,)
+            "SELECT COUNT(*) FROM inbox WHERE agent_id=? AND delivered_at IS NULL "
+            "AND COALESCE(held,0)=0", (agent_id,)
         ).fetchone()
         return int(row[0])
+
+    # Pull mode: messages held for the agent to read with read_messages.
+
+    def enqueue_held(self, agent_id: str, body: str, sender_id: str | None) -> int:
+        with self.tx() as c:
+            cur = c.execute(
+                "INSERT INTO inbox (agent_id, sender_id, body, created_at, held) VALUES (?,?,?,?,1)",
+                (agent_id, sender_id, body, time.time()),
+            )
+            return int(cur.lastrowid)
+
+    def unread(self, agent_id: str) -> list[Message]:
+        rows = self.conn.execute(
+            "SELECT * FROM inbox WHERE agent_id=? AND held=1 AND delivered_at IS NULL ORDER BY id",
+            (agent_id,),
+        )
+        return [_load(Message, r) for r in rows]
+
+    def unread_count(self, agent_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM inbox WHERE agent_id=? AND held=1 AND delivered_at IS NULL",
+            (agent_id,),
+        ).fetchone()
+        return int(row[0])
+
+    NOTICE_TTL = 120.0  # seconds a notice counts as outstanding before another may go
+
+    def claim_notice(self, agent_id: str) -> list[Message] | None:
+        """The unread messages a new notice should cover, marking them noticed;
+        None when there are none, or a notice went out within ``NOTICE_TTL``
+        (one covers everything unread, so a later message adds no second one;
+        after that a lost notice is sent again)."""
+        with self.tx() as c:
+            rows = c.execute(
+                "SELECT * FROM inbox WHERE agent_id=? AND held=1 AND delivered_at IS NULL ORDER BY id",
+                (agent_id,),
+            ).fetchall()
+            if not rows:
+                return None
+            last = max((r["noticed_at"] or 0.0) for r in rows)
+            if last and time.time() - last < self.NOTICE_TTL:
+                return None
+            c.execute(
+                "UPDATE inbox SET noticed_at=? WHERE agent_id=? AND held=1 AND delivered_at IS NULL",
+                (time.time(), agent_id),
+            )
+            return [_load(Message, r) for r in rows]
+
+    def reset_notice(self, agent_id: str) -> None:
+        """A notice that couldn't go out: let the next one try again."""
+        with self.tx() as c:
+            c.execute(
+                "UPDATE inbox SET noticed_at=NULL WHERE agent_id=? AND held=1 AND delivered_at IS NULL",
+                (agent_id,),
+            )
+
+    def read_held(self, agent_id: str) -> list[Message]:
+        """Every unread held message, marked read."""
+        with self.tx() as c:
+            rows = c.execute(
+                "SELECT * FROM inbox WHERE agent_id=? AND held=1 AND delivered_at IS NULL ORDER BY id",
+                (agent_id,),
+            ).fetchall()
+            c.execute(
+                "UPDATE inbox SET delivered_at=? WHERE agent_id=? AND held=1 AND delivered_at IS NULL",
+                (time.time(), agent_id),
+            )
+            return [_load(Message, r) for r in rows]
 
     def message_delivered(self, message_id: int) -> bool:
         """Whether the specific message ``enqueue`` returned has since been
@@ -1021,10 +1123,10 @@ class DB:
             c.execute(
                 "INSERT INTO tasks (id, repo_root, agent_id, caller_id, caller_ws_id, profile, "
                 "task_text, mode, isolate, branch, done_when, files, depends_on, state, "
-                "created_at, started_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "created_at, started_at, weight) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (t.id, t.repo_root, t.agent_id, t.caller_id, t.caller_ws_id, t.profile,
                  t.task_text, t.mode, int(t.isolate), t.branch, t.done_when, t.files,
-                 t.depends_on, t.state, t.created_at, t.started_at),
+                 t.depends_on, t.state, t.created_at, t.started_at, t.weight),
             )
 
     def get_task(self, task_id: str) -> Task | None:

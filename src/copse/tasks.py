@@ -167,15 +167,17 @@ def _refers_to(dep: str, t: Task) -> bool:
     return dep == t.branch or (t.agent_id is not None and dep == t.agent_id)
 
 
-def _cancel(db: DB, task_id: str, reason: str) -> None:
+def _cancel(db: DB, task_id: str, reason: str) -> list[str]:
     """Cancel a still-pending task and tell its caller, then cascade the
     cancellation to any pending task depending on it, recursively: a task
     waiting on one that can never merge can itself never merge. Re-fetches
     and checks state so cancelling the same task twice (reachable via more
-    than one dependency path) is a no-op the second time."""
+    than one dependency path) is a no-op the second time. Returns the ids
+    cancelled, the task first."""
     t = db.get_task(task_id)
     if t is None or t.state != "pending":
-        return
+        return []
+    cancelled = [t.id]
     db.update_task(t.id, state="cancelled")
     if t.caller_id:
         try:
@@ -186,7 +188,33 @@ def _cancel(db: DB, task_id: str, reason: str) -> None:
             pass
     for dependent in db.list_tasks(t.repo_root, state="pending"):
         if any(_refers_to(d, t) for d in _loads(dependent.depends_on)):
-            _cancel(db, dependent.id, f"its dependency {t.id} ({t.branch or t.id}) was cancelled")
+            cancelled += _cancel(
+                db, dependent.id, f"its dependency {t.id} ({t.branch or t.id}) was cancelled")
+    return cancelled
+
+
+def cancel(db: DB, caller: Agent | None, task_id: str, reason: str = "") -> str:
+    """Cancel a pending task on behalf of ``caller`` (its own caller, or the
+    root of its session) and say what was cancelled, dependents included.
+    Raises ``ValueError`` if the task is unknown, not the caller's, or has
+    already started."""
+    from copse import autopilot
+
+    t = db.get_task(task_id)
+    if t is None:
+        raise ValueError(f"No task {task_id}. list_tasks shows what's queued.")
+    mine = caller.id == t.caller_id if caller else t.caller_id is None
+    if not mine and caller and t.caller_id:
+        mine = autopilot.root_of(db, t.caller_id) == caller.id
+    if not mine:
+        raise ValueError(f"Task {task_id} isn't yours to cancel: only its caller or its session root can.")
+    if t.state != "pending":
+        raise ValueError(f"Task {task_id} is {t.state}, not queued: only a pending task can be cancelled.")
+    ids = _cancel(db, t.id, reason or "cancelled by its caller")
+    text = f"Cancelled task {ids[0]}."
+    if len(ids) > 1:
+        text += f" Also cancelled its dependents: {', '.join(ids[1:])}."
+    return text
 
 
 # -- queueing and starting -------------------------------------------------------
@@ -195,7 +223,8 @@ def _cancel(db: DB, task_id: str, reason: str) -> None:
 def enqueue(
     db: DB, caller: Agent | None, caller_ws: Workspace, profile: str, task_text: str, mode: str,
     *, isolate: bool, branch: str | None, done_when: str | None,
-    files: list[str] | None, depends_on: list[str] | None,
+    files: list[str] | None, depends_on: list[str] | None, plan_first: bool | None = None,
+    weight: str | None = None,
 ) -> Task:
     """Record a task that can't start yet: no worker, no workspace, just what
     it takes to start it once its dependencies are merged."""
@@ -204,16 +233,18 @@ def enqueue(
         caller_id=caller.id if caller else None, caller_ws_id=caller_ws.id,
         profile=profile, task_text=task_text, mode=mode, isolate=int(isolate),
         branch=branch, done_when=done_when, files=_dumps(files),
-        depends_on=_dumps(depends_on), state="pending", created_at=time.time(),
+        depends_on=_dumps(depends_on), state="pending", created_at=time.time(), weight=weight,
     )
     db.add_task(t)
+    if plan_first is not None:
+        db.update_task(t.id, plan_first=int(plan_first))
     return t
 
 
 def record_started(
     db: DB, caller_ws: Workspace, worker: Agent, profile: str, task_text: str, mode: str,
     *, isolate: bool, branch: str | None, done_when: str | None,
-    files: list[str] | None, depends_on: list[str] | None,
+    files: list[str] | None, depends_on: list[str] | None, weight: str | None = None,
 ) -> Task:
     """Record a task that started right away, so its ``files`` can be checked
     for overlap against later tasks."""
@@ -222,7 +253,7 @@ def record_started(
         caller_id=worker.parent_id, caller_ws_id=caller_ws.id, profile=profile,
         task_text=task_text, mode=mode, isolate=int(isolate), branch=branch,
         done_when=done_when, files=_dumps(files), depends_on=_dumps(depends_on),
-        state="started", created_at=time.time(), started_at=time.time(),
+        state="started", created_at=time.time(), started_at=time.time(), weight=weight,
     )
     db.add_task(t)
     return t
@@ -238,6 +269,7 @@ def start_queued(db: DB, task: Task) -> Agent:
     worker, _wws = agents.delegate(
         db, caller, caller_ws, task.profile, task.task_text, task.mode,
         isolate=bool(task.isolate), branch=task.branch, done_when=task.done_when,
+        plan_first=None if task.plan_first is None else bool(task.plan_first),
     )
     db.update_task(task.id, agent_id=worker.id, state="started", started_at=time.time())
     return worker

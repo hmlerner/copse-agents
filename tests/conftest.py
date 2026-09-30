@@ -81,6 +81,7 @@ def copse_home(tmp_path, monkeypatch):
     monkeypatch.setenv("COPSE_HOME", str(home))
     # Never touch the real ~/.claude.json (providers.trust_folder writes there).
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     # The shell provider runs $SHELL. The person's own shell reads their dotfiles,
     # so a slow or stuck one (a stale pyenv rehash lock waits 60s) would fail
     # tests that give the shell a few seconds.
@@ -92,6 +93,15 @@ def copse_home(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@example.com")
     return home
+
+
+@pytest.fixture(autouse=True)
+def push_messages(monkeypatch):
+    """Most tests read the messages copse queues for a supervisor directly;
+    tests/test_message_pull.py turns pull mode (the real default) back on."""
+    from copse import agents
+
+    monkeypatch.setattr(agents, "pulls_messages", lambda db, agent: False)
 
 
 @pytest.fixture

@@ -244,8 +244,15 @@ def handle_hook(db, agent_id: str, event: str, payload: dict) -> dict | None:
     if event == "agy-stop":
         error = str(payload.get("error") or "")
         if error:
+            limited = bool(LIMIT_ERROR.search(error))
+            if limited:
+                from copse import quota
+                from copse.config import RepoConfig, load_repo_config
+
+                ws = db.get_workspace(agent.workspace_id)
+                quota.record_limit("antigravity", load_repo_config(ws.repo_root) if ws else RepoConfig())
             agents.handle_hook(db, agent_id, "stop-failure",
-                               {**base, "error_type": "rate_limit" if LIMIT_ERROR.search(error) else "error"})
+                               {**base, "error_type": "rate_limit" if limited else "error"})
             return None
         if db.pending_count(agent_id):
             # A new turn, not a continuation: only then does agy give the

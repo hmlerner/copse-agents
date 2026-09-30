@@ -32,6 +32,7 @@ Goals come from the chat (the supervisor calls ``set_goal``) or from
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -39,15 +40,16 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from copse.config import CONFIG_DIR, RepoConfig, config_root, copse_home, load_repo_config
+from copse.config import CONFIG_DIR, WEIGHTS, RepoConfig, config_root, load_repo_config
 from copse.db import DB, Agent, Autopilot, Milestone, Workspace
 from copse.profiles import load_profile
+
+log = logging.getLogger(__name__)
 
 GOALS_FILE = "goals.md"
 MAX_NUDGES = 3
 MAX_GOAL_CHARS = 4000        # Claude Code's limit for a /goal condition
 OUTPUT_TAIL_LINES = 30
-USAGE_FRESH_SECONDS = 15 * 60
 
 GUIDE = """
 
@@ -75,6 +77,10 @@ to be asked each step.
   `files` (the paths/globs each task will touch) so copse can warn about
   overlaps, and `depends_on` (an earlier task's agent id or branch) when one
   task's work must merge before another starts; copse queues it until then.
+- Unless you need a specific profile, pass `weight` on every `assign`:
+  "light" (small, well-specified, mechanical), "medium" (a normal feature or
+  bugfix in one area) or "heavy" (design-heavy, cross-cutting, subtle). copse
+  picks an available profile for that tier.
 - Keep task briefs short: the goal in a sentence or two, the files, and the
   test that proves it done. Workers read the tests and code themselves;
   never paste them. Writing is the slowest thing you do.
@@ -126,6 +132,8 @@ def parse_goals(text: str) -> Plan | None:
         if m := re.match(r"^##\s+(.+?)\s*$", line):
             milestones.append([m.group(1), None, [], None])
             continue
+        if milestones and STATUS_RE.match(line):
+            continue   # written by sync_goals_file: information only, never read back
         if milestones and milestones[-1][3] is None and (
             m := re.match(r"^\s*profile:\s*`?([\w.-]+)`?\s*$", line, re.I)
         ):
@@ -144,11 +152,110 @@ def parse_goals(text: str) -> Plan | None:
                 [(t, c, clean(d), *([p] if p else [])) for t, c, d, p in milestones])
 
 
+def goals_path(root: str) -> Path:
+    # config_root: in a linked worktree the git-ignored .copse lives in the
+    # main checkout, and that is the file the session loads (and syncs to).
+    return config_root(root) / CONFIG_DIR / GOALS_FILE
+
+
 def load_goals_file(root: str) -> Plan | None:
-    path = config_root(root) / CONFIG_DIR / GOALS_FILE
+    path = goals_path(root)
     if not path.is_file():
         return None
     return parse_goals(path.read_text(encoding="utf-8"))
+
+
+# A status line is what sync_goals_file writes under each milestone. The
+# format is strict so user prose is never mistaken for one.
+STATUS_RE = re.compile(r"^status: (passed|failed|pending)( at [0-9a-f]{7,40})?( \(\d{4}-\d{2}-\d{2}\))?\s*$")
+
+
+def status_line(m: Milestone) -> str:
+    """``status: passed at abc1234 (2026-09-29)``: only the state, a short sha
+    and a date, nothing else about the session."""
+    if m.status not in ("passed", "failed"):
+        return "status: pending"
+    sha = (m.passed_sha if m.status == "passed" else None) or m.checked_sha
+    out = f"status: {m.status}"
+    if sha and re.fullmatch(r"[0-9a-f]{7,40}", sha):
+        out += f" at {sha[:7]}"
+    if m.checked_at:
+        out += time.strftime(" (%Y-%m-%d)", time.localtime(m.checked_at))
+    return out
+
+
+def rewrite_goals(text: str, lines_for: list[str]) -> str | None:
+    """``text`` with one status line per milestone (``lines_for``, in order),
+    the rest byte for byte. None when the file's milestones don't number
+    ``len(lines_for)``."""
+    lines = text.splitlines(keepends=True)
+    sections: list[list[int]] = []   # line indexes per milestone, heading first
+    for i, line in enumerate(lines):
+        if re.match(r"^##\s+(.+?)\s*$", line.rstrip("\r\n")):
+            sections.append([i])
+        elif sections:
+            sections[-1].append(i)
+    if len(sections) != len(lines_for):
+        return None
+    out = lines[:sections[0][0]] if sections else lines
+    for idx, new in zip(sections, lines_for):
+        body = [lines[i] for i in idx]
+        eol = "\r\n" if body[0].endswith("\r\n") else "\n"
+        placed, anchor, have_profile, have_check = False, 0, False, False
+        kept: list[str] = []
+        for j, line in enumerate(body):
+            bare = line.rstrip("\r\n")
+            if j and STATUS_RE.match(bare):
+                if not placed:
+                    kept.append(new + (line[len(bare):] or eol))
+                    placed = True
+                continue
+            kept.append(line)
+            if j and not have_profile and re.match(r"^\s*profile:\s*`?([\w.-]+)`?\s*$", bare, re.I):
+                have_profile, anchor = True, len(kept)
+            elif j and not have_check and re.match(r"^\s*check:\s*`?(.+?)`?\s*$", bare, re.I):
+                have_check, anchor = True, len(kept)
+        if not placed:
+            anchor = anchor or 1
+            if not kept[anchor - 1].endswith("\n"):
+                kept[anchor - 1] += eol
+            kept.insert(anchor, new + eol)
+        out += kept
+    return "".join(out)
+
+
+def sync_goals_file(db: DB, root_id: str) -> None:
+    """Write each milestone's status back to the goals.md this session's goal
+    was loaded from. goals.md may be committed, so what goes in it is only
+    passed/failed/pending, a short sha and a date; loading it never trusts a
+    status line. Does nothing for a session that didn't load its goal from a
+    file, has autopilot off (a handover switches the old session's off),
+    is paused, or whose milestones no longer match the file. Never raises: a
+    file we can't write must not fail a check."""
+    try:
+        ap = db.get_autopilot(root_id)
+        root = db.get_agent(root_id)
+        if not ap or not ap.enabled or not ap.goals_file or not ap.goal or root is None \
+                or root.status in ("paused", "done"):
+            return
+        path = Path(ap.goals_file)
+        text = path.read_bytes().decode("utf-8")
+        plan = parse_goals(text)
+        ms = db.milestones(root_id)
+        if plan is None or plan.goal != ap.goal or [m[0] for m in plan.milestones] != [m.title for m in ms]:
+            return   # the goal was replaced from the chat: the file is no longer ours
+        new = rewrite_goals(text, [status_line(m) for m in ms])
+        if new is None or new == text:
+            return
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_bytes(new.encode("utf-8"))
+            os.chmod(tmp, path.stat().st_mode & 0o7777)
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        log.exception("copse: couldn't sync milestone status to goals.md")
 
 
 # -- sessions ----------------------------------------------------------------
@@ -179,6 +286,9 @@ def enable(db: DB, root_id: str, ws: Workspace) -> Plan | None:
     plan = load_goals_file(ws.path)
     if plan:
         set_goal(db, root_id, plan.goal, plan.milestones, plan.detail)
+        # Recorded after set_goal, so loading a file never rewrites it: the
+        # first write is after a check. Every milestone starts pending.
+        db.update_autopilot(root_id, goals_file=str(goals_path(ws.path)))
     return plan
 
 
@@ -208,16 +318,97 @@ def set_goal(db: DB, root_id: str, goal: str,
             db.record_check(m.id, prev.status == "passed", prev.output or "", prev.checked_sha,
                             passed_sha=prev.passed_sha)
     db.bump_progress(root_id)
+    sync_goals_file(db, root_id)
 
 
-def resolve_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None) -> str:
-    """The worker profile for a delegation: ``requested`` if given, else the
-    first unverified milestone's profile in the caller's session, else the
-    repo's ``default_agent``. Raises AutopilotError if it doesn't exist."""
+CLI_FOR_PROVIDER = {"claude": "claude", "codex": "codex", "antigravity": "agy"}
+
+
+def _unavailable(name: str, cfg: RepoConfig, repo_root: str) -> str | None:
+    """Why routing skips profile ``name`` (its CLI isn't installed, its
+    provider is out of headroom, it doesn't exist), or None if it's usable."""
+    import shutil
+
+    from copse import quota
+
+    try:
+        p = load_profile(name, repo_root)
+    except KeyError:
+        return f"no profile {name}"
+    cli = CLI_FOR_PROVIDER.get(p.provider)
+    if cli and shutil.which(cli) is None:
+        return f"{cli} isn't installed, skipped {name}"
+    if p.provider in quota.PROVIDERS:
+        room = quota.headroom(p.provider, cfg, repo_root)
+        if room <= 100 - cfg.usage_limit:
+            label = quota.NAMES.get(p.provider, p.provider)
+            if p.provider == "native":
+                return f"local model server not answering, skipped {name}"
+            if room <= 0:
+                return f"{label} limit reached, skipped {name}"
+            return f"{label} at {100 - room:.0f}%, skipped {name}"
+    return None
+
+
+def _route_by_weight(db: DB, cfg: RepoConfig, repo_root: str, weight: str, task: str | None,
+                     files: list[str] | None) -> tuple[str | None, bool, str]:
+    """(profile, learned, why) for a task of ``weight``; profile is None when
+    every candidate for the tier is out."""
+    from copse import learning
+
+    skipped: list[str] = []
+    remaining: list[str] = []
+    for name in cfg.routing.get(weight, []):
+        why = _unavailable(name, cfg, repo_root)
+        if why:
+            skipped.append(why)
+        else:
+            remaining.append(name)
+    if not remaining:
+        return None, False, f"every {weight} candidate was out ({'; '.join(skipped) or 'none configured'})"
+    pick = learning.choose(db, cfg, repo_root, task, files, candidates=remaining, weight=weight)
+    name = pick or remaining[0]
+    why = f"weight {weight} -> {name}"
+    detail = [f"learning picked it" if pick else "", *skipped]
+    detail = [d for d in detail if d]
+    if detail:
+        why += f" ({', '.join(detail)})"
+    return name, bool(pick), why
+
+
+def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None,
+                   task: str | None = None, files: list[str] | None = None,
+                   weight: str | None = None, why: list[str] | None = None) -> tuple[str, bool]:
+    """The worker profile for a delegation, and whether learning chose it:
+    ``requested`` if given, else the first unverified milestone's profile in
+    the caller's session, else the repo's routing for ``weight`` (available
+    candidates only, a learning plugin choosing among them), else a learning
+    plugin's pick among ``learning_candidates``, else the repo's
+    ``default_agent``. Raises AutopilotError if it doesn't exist. An
+    explanation of a routed pick is appended to ``why``."""
     name = (requested or "").strip()
+    learned = False
     if not name:
         pending = next((m for m in db.milestones(root_of(db, caller_id)) if m.status != "passed"), None)
-        name = (pending.profile if pending else None) or load_repo_config(repo_root).default_agent
+        name = (pending.profile if pending else None) or ""
+    if not name:
+        from copse import learning
+
+        cfg = load_repo_config(repo_root)
+        if weight:
+            if weight not in WEIGHTS:
+                raise AutopilotError(f"weight must be one of {', '.join(WEIGHTS)}, not {weight!r}")
+            picked, learned, note = _route_by_weight(db, cfg, repo_root, weight, task, files)
+            if picked:
+                name = picked
+            else:
+                note += f"; using {cfg.default_agent}"
+            if why is not None:
+                why.append(note)
+        if not name:
+            name = learning.choose(db, cfg, repo_root, task, files, weight=weight) or ""
+            learned = bool(name)
+            name = name or cfg.default_agent
     try:
         load_profile(name, repo_root)
     except KeyError:
@@ -225,7 +416,13 @@ def resolve_profile(db: DB, caller_id: str, repo_root: str, requested: str | Non
             f"no agent profile named {name!r}; see list_agent_profiles, "
             "or pass agent_profile explicitly"
         ) from None
-    return name
+    return name, learned
+
+
+def resolve_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None,
+                    task: str | None = None, files: list[str] | None = None) -> str:
+    """``choose_profile`` without the learned flag."""
+    return choose_profile(db, caller_id, repo_root, requested, task, files)[0]
 
 
 def need_user(db: DB, root_id: str, question: str) -> None:
@@ -356,6 +553,7 @@ def check_milestones(db: DB, root_id: str, ws: Workspace, position: int | None =
         db.update_autopilot(root_id, state="done", note=None)
     elif (ap := db.get_autopilot(root_id)) and ap.state == "done":
         db.update_autopilot(root_id, state="running")
+    sync_goals_file(db, root_id)
     regressed_ids = {m.id for m in regressed}
     shown = [m for m in ms if position is None or m.position == position or done or m.id in regressed_ids]
     lines = []
@@ -442,7 +640,7 @@ def split_workers(db: DB, root_id: str, *, screen: bool = False) -> tuple[list[A
     now = time.time()
     working, stalled = [], []
     for a in active_workers(db, root_id):
-        maybe = (a.result is None and a.status == "idle"
+        maybe = (a.result is None and a.status == "idle" and a.plan_state != "proposed"
                  and get_provider(a.provider).uses_hooks
                  and now - (a.status_since or a.created_at) >= IDLE_GRACE_SECONDS)
         if maybe and (not screen or a.headless or agents.screen_status(db, a, samples=2) == "idle"):
@@ -478,42 +676,24 @@ def check_capacity(db: DB, caller_id: str | None, cfg: RepoConfig) -> None:
 # -- Claude usage -------------------------------------------------------------------
 
 
-def usage_path() -> Path:
-    return copse_home() / "usage.json"
-
-
 def record_usage(status: dict) -> None:
     """Keep the plan usage Claude Code gives its status line (Claude.ai
     subscriptions only)."""
-    limits = status.get("rate_limits")
-    if not isinstance(limits, dict):
-        return
-    data = {"updated_at": time.time()}
-    for window in ("five_hour", "seven_day"):
-        w = limits.get(window)
-        if isinstance(w, dict) and isinstance(w.get("used_percentage"), (int, float)):
-            data[window] = {"used": float(w["used_percentage"]), "resets_at": w.get("resets_at")}
-    if len(data) > 1:
-        path = usage_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.replace(path)
+    from copse import quota
+
+    quota.record_claude(status)
 
 
 def usage() -> dict | None:
     """The fullest recent usage window: {"window", "used", "resets_at"}, or None."""
-    try:
-        data = json.loads(usage_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    from copse import quota
+
+    q = quota.get("claude")
+    w = quota.fullest(q) if q else None
+    if w is None:
         return None
-    if time.time() - data.get("updated_at", 0) > USAGE_FRESH_SECONDS:
-        return None
-    windows = [(k, v) for k, v in data.items() if isinstance(v, dict)]
-    if not windows:
-        return None
-    name, w = max(windows, key=lambda kv: kv[1].get("used", 0))
-    return {"window": name, "used": w.get("used", 0), "resets_at": w.get("resets_at")}
+    name = "five_hour" if w.minutes == 300 else "seven_day"
+    return {"window": name, "used": w.used, "resets_at": w.resets_at}
 
 
 def usage_note(u: dict) -> str:
@@ -525,11 +705,107 @@ def usage_note(u: dict) -> str:
 
 
 def limit_reached(db: DB, agent: Agent) -> None:
-    """A turn failed on the usage limit: stop pushing until the user is back."""
+    """A turn failed on its provider's usage limit: stop pushing until the
+    user is back. Only Claude's window is tracked (see ``usage``), so only a
+    Claude limit, with a reset time known, stops that provider's workers and
+    resumes on its own; any other provider's just blocks and names it."""
     ap = db.get_autopilot(root_of(db, agent.id))
-    if ap and ap.enabled:
-        db.update_autopilot(ap.root_id, state="blocked", nudges=0,
-                            note="Claude's usage limit was reached. Continue when it resets.")
+    if not ap or not ap.enabled:
+        return
+    u = usage() if agent.provider == "claude" else None
+    if u and isinstance(u.get("resets_at"), (int, float)):
+        _pause_provider(db, ap.root_id, agent.provider, u["resets_at"],
+                        "Claude's usage limit was reached")
+        return
+    db.update_autopilot(ap.root_id, state="blocked", nudges=0,
+                        note=f"The {agent.provider} provider's usage limit was reached. "
+                        "Continue when it resets.")
+
+
+def _pause_provider(db: DB, root_id: str, provider: str, resets_at: float, why: str) -> None:
+    from copse import agents
+
+    stopped = [a for a in active_workers(db, root_id)
+               if agents.runs_process(a) and a.provider == provider]
+    for a in stopped:
+        agents.pause_worker(db, a)
+    note = f"{why}. Autopilot paused so work doesn't stall halfway"
+    if stopped:
+        note += f"; {len(stopped)} {provider} worker(s) stopped until then"
+    db.update_autopilot(root_id, state="usage_paused", usage_resets_at=float(resets_at),
+                        usage_paused_ids=json.dumps([a.id for a in stopped]),
+                        note=note + ".", nudges=0)
+
+
+def over_limit(db: DB, root_id: str, cfg: RepoConfig) -> bool:
+    """Usage is at the limit: stop the session's workers until the window
+    resets (autopilot state "usage_paused"). Without a reset time to wait for,
+    autopilot is just blocked, as the user has to say when to go on."""
+    u = usage()
+    if not u or u["used"] < cfg.usage_limit:
+        return False
+    resets_at = u.get("resets_at")
+    if not isinstance(resets_at, (int, float)):
+        db.update_autopilot(root_id, state="blocked", note=usage_note(u)
+                            + ". Autopilot paused so work doesn't stall halfway.")
+        return True
+    _pause_provider(db, root_id, "claude", resets_at, usage_note(u))
+    return True
+
+
+def usage_resume(db: DB, root_id: str, now: float | None = None) -> str | None:
+    """Once the usage window has reset, bring back the workers stopped for it
+    and tell the supervisor. Returns what was done, or None if still waiting."""
+    ap = db.get_autopilot(root_id)
+    if ap is None or ap.state != "usage_paused" or ap.usage_resets_at is None:
+        return None
+    now = time.time() if now is None else now
+    if now <= ap.usage_resets_at:
+        return None
+    from copse import agents
+
+    root = db.get_agent(root_id)
+    if root is None or root.status in ("paused", "done") or not agents.is_alive(root):
+        return None  # the session itself is stopped: `copse continue` brings it back
+    ws = db.get_workspace(root.workspace_id)
+    cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
+    u = usage()
+    if u and u["used"] >= cfg.usage_limit:
+        return None  # the fresh reading says the limit still holds
+    try:
+        ids = set(json.loads(ap.usage_paused_ids or "[]"))
+    except ValueError:
+        ids = set()
+    resumed = agents.resume(db, root_id, only=ids) if ids else []
+    db.update_autopilot(root_id, state="running", note=None, usage_resets_at=None,
+                        usage_paused_ids=None, nudges=0)
+    what = (f"resumed {', '.join(a.id for a in resumed)}" if resumed
+            else "no workers needed resuming")
+    agents.send_message(db, root_id, "[copse autopilot] Claude's usage window has reset, "
+                        f"so autopilot is running again: {what}.")
+    return f"usage reset for {root_id}: {what}"
+
+
+def usage_sweep(db: DB, now: float | None = None) -> list[str]:
+    """One pass over every autopilot session: stop workers at the limit,
+    resume them after the reset. Called from the cull sweep."""
+    done = []
+    for root in db.list_agents():
+        if root.mode != "interactive" or root.status in ("paused", "done"):
+            continue
+        ap = db.get_autopilot(root.id)
+        if ap is None or not ap.enabled:
+            continue
+        if ap.state == "running" and ap.goal:
+            ws = db.get_workspace(root.workspace_id)
+            cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
+            if over_limit(db, root.id, cfg):
+                done.append(f"usage limit reached: {root.id} is {db.get_autopilot(root.id).state}")
+        elif ap.state == "usage_paused":
+            line = usage_resume(db, root.id, now)
+            if line:
+                done.append(line)
+    return done
 
 
 # -- the Stop hook -------------------------------------------------------------------
@@ -547,17 +823,18 @@ def on_stop(db: DB, agent: Agent, payload: dict) -> dict | None:
         return None
     from copse import agents
 
+    ws = db.get_workspace(agent.workspace_id)
+    cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
+    if over_limit(db, agent.id, cfg):
+        return None  # workers included: they'd keep burning usage
     if checking(ap):
         return None  # the check's result arrives as a message and wakes it up
     working, stalled = split_workers(db, agent.id, screen=True)
-    if any(agents.runs_process(a) for a in working):
+    # A worker waiting on plan approval waits on the supervisor, so the supervisor
+    # can't stop for it (see nudge).
+    if any(agents.runs_process(a) for a in working
+            if getattr(a, "plan_state", None) != "proposed"):
         return None  # their results arrive as messages and wake it up
-    ws = db.get_workspace(agent.workspace_id)
-    cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
-    u = usage()
-    if u and u["used"] >= cfg.usage_limit:
-        db.update_autopilot(agent.id, state="blocked", note=usage_note(u) + ". Autopilot paused so work doesn't stall halfway.")
-        return None
     nudges = ap.nudges if ap.nudged_at == ap.progress else 0
     if nudges >= MAX_NUDGES:
         db.update_autopilot(agent.id, state="stalled", nudges=0,
@@ -577,6 +854,11 @@ def nudge(db: DB, ap: Autopilot, cfg: RepoConfig,
     if open_subagents:
         pending = ("Subagent work not yet recorded: when each of your subagents finishes, call "
                    f"complete_subagent for {', '.join(open_subagents)}.\n\n")
+    planning = [a.id for a in working if getattr(a, "plan_state", None) == "proposed"]
+    if planning:
+        pending += (f"Plans awaiting your approval: {', '.join(planning)}. Read each plan "
+                    "(it arrived as a message) and call approve_plan, with feedback and "
+                    "approved=false to ask for changes; the worker is waiting on you.\n\n")
     stuck = ""
     if stalled:
         names = ", ".join(a.id for a in stalled)

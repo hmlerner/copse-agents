@@ -105,6 +105,9 @@ def agent_entry(db: DB, a: Agent, *, detail: bool = False,
              "status": status, "mode": a.mode}
     if u and u.total:
         entry["tokens"] = usage_mod.short_summary(u)
+    unread = db.unread_count(a.id)
+    if unread:
+        entry["unread"] = unread
     if detail:
         subs = db.native_subagents(a.id) if native_subagents is None else native_subagents
         visible = _visible_native_subagents(subs, now if now is not None else time.time())
@@ -252,7 +255,7 @@ def autopilot_entry(db: DB, repo_root: str | None, panes: dict[str, bool] | None
     ``repo_root``, for the sidebar. ``panes`` should be the same
     ``tmux.list_panes()`` result passed to ``snapshot`` for this refresh, so
     liveness isn't checked with a second tmux subprocess."""
-    from copse import autopilot
+    from copse import autopilot, quota
 
     if not repo_root:
         return None
@@ -269,8 +272,10 @@ def autopilot_entry(db: DB, repo_root: str | None, panes: dict[str, bool] | None
         "goal": ap.goal,
         "state": ap.state,
         "note": ap.note,
+        "usage_resets_at": ap.usage_resets_at,
         "milestones": [{"position": m.position, "title": m.title, "status": m.status,
                         "check": m.check_cmd} for m in db.milestones(root.id)],
         "usage": autopilot.usage(),
+        "quota": quota.notes(repo_root, native=False),
         "workers": len(autopilot.working_workers(db, root.id)),
     }

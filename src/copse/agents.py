@@ -158,8 +158,18 @@ def preload_tools(agent: Agent, ws: Workspace) -> bool:
     return agent.mode != "interactive"
 
 
+PLAN_FIRST_NOTE = """
+
+Plan first: before you edit any file, read the code you need, then call the
+`submit_plan` tool from the `copse` MCP server with a short plan (the files
+you'll change and how, and how you'll test it) and stop. Wait for your
+supervisor's decision, which arrives as a message. Don't edit files until the
+plan is approved; if it comes back with feedback, revise it and call
+`submit_plan` again."""
+
+
 def decorate_worker_prompt(task: str, agent_id: str, ws: Workspace, done_when: str | None,
-                           provider, headless: bool) -> str:
+                           provider, headless: bool, plan_first: bool = False) -> str:
     """The prompt actually sent to a handoff/assign worker's CLI: the raw
     ``task`` plus its finish line, the WORKER_FOOTER reminder to report, and
     (for an interactive Claude worker with a finish line) the ``/goal``
@@ -170,6 +180,8 @@ def decorate_worker_prompt(task: str, agent_id: str, ws: Workspace, done_when: s
     prompt = task
     if done_when:
         prompt += f"\n\nFinish line: {done_when.strip()}"
+    if plan_first:
+        prompt += PLAN_FIRST_NOTE
     prompt += WORKER_FOOTER.format(agent_id=agent_id, branch=ws.branch,
                                    guidance=worker_guidance(ws))
     if done_when and provider.name == "claude" and not headless:
@@ -192,6 +204,7 @@ def spawn(
     background_setup: bool = False,
     done_when: str | None = None,
     autopilot: bool = False,
+    plan_first: bool = False,
 ) -> Agent:
     """Start an agent in ``ws``. Workers (handoff/assign) given a ``done_when``
     finish line run it as a Claude Code ``/goal``. With ``autopilot``, the
@@ -218,7 +231,8 @@ def spawn(
             )
         prompt = raw_task = subagent_prompt(profile.prompt, prompt or "", ws, done_when)
     elif prompt and mode in ("handoff", "assign"):
-        prompt = decorate_worker_prompt(prompt, agent_id, ws, done_when, provider, headless)
+        prompt = decorate_worker_prompt(prompt, agent_id, ws, done_when, provider, headless,
+                                        plan_first=plan_first)
     elif prompt and mode == "review":
         prompt = raw_task = prompt + REVIEW_FOOTER.format(agent_id=agent_id, branch=ws.branch)
 
@@ -229,6 +243,9 @@ def spawn(
         done_when=done_when,
     )
     db.add_agent(agent)
+    if plan_first and provider.launches_process and mode in ("handoff", "assign"):
+        db.update_agent(agent_id, plan_first=1)
+        agent.plan_first = 1
     if autopilot:
         plan = pilot.enable(db, agent_id, ws)
         if plan and not prompt:
@@ -583,7 +600,7 @@ def _launch(db: DB, agent: Agent, ws: Workspace, *, prompt: str | None,
 
         trust_folder(ws.path)  # no trust dialog for nobody to answer
     argv = provider.command(LaunchContext(agent.id, profile, prompt, resume=resume, cwd=ws.path,
-                                          mode=agent.mode))
+                                          mode=agent.mode, plan_first=bool(agent.plan_first)))
     target = _open_window(db, agent, ws, f"{profile.name}-{agent.id[:4]}", argv, watch_pane)
 
     if provider.name == "shell" and prompt:
@@ -682,7 +699,8 @@ def run_headless(db: DB, agent_id: str, resume: str | None = None, *,
             new_session = str(uuid.uuid4())
             db.update_agent(agent_id, session_ref=new_session)
         ctx = LaunchContext(agent_id, _profile_for(db, agent, ws), msg.body, resume=session,
-                            cwd=ws.path, session_id=new_session, mode=agent.mode)
+                            cwd=ws.path, session_id=new_session, mode=agent.mode,
+                            plan_first=bool(agent.plan_first))
         print(f"\n── copse: turn {turn} ──\n{_preview(msg.body)}\n", flush=True)
         try:
             code = subprocess.call(provider.command(ctx), cwd=ws.path, stdin=subprocess.DEVNULL)
@@ -817,13 +835,15 @@ def latest_paused(db: DB, ws: Workspace) -> Agent | None:
     return max(roots, key=lambda a: a.status_since or 0, default=None)
 
 
-def resume(db: DB, root_id: str, *, watch_pane: bool = True) -> list[Agent]:
+def resume(db: DB, root_id: str, *, watch_pane: bool = True,
+           only: set[str] | None = None) -> list[Agent]:
     """Bring a paused session back: the supervisor and its paused workers
     restart in their own workspaces. Claude Code picks up its previous
-    conversation (--resume); other CLIs restart on their original task."""
+    conversation (--resume); other CLIs restart on their original task.
+    With ``only``, just those agents (if paused) restart."""
     resumed = []
     for a in tree(db, root_id):
-        if a.status != "paused":
+        if a.status != "paused" or (only is not None and a.id not in only):
             continue
         ws = db.get_workspace(a.workspace_id)
         if ws is None or not os.path.isdir(ws.path):
@@ -839,8 +859,9 @@ def resume(db: DB, root_id: str, *, watch_pane: bool = True) -> list[Agent]:
             # start needs the same decoration it got the first time. A row
             # from before this change stored the already-decorated text, so
             # it gets decorated a second time here; harmless, if redundant.
-            prompt = decorate_worker_prompt(a.task, a.id, ws, a.done_when, provider,
-                                            bool(a.headless)) + RESUME_NOTE
+            prompt = decorate_worker_prompt(
+                a.task, a.id, ws, a.done_when, provider, bool(a.headless),
+                plan_first=bool(a.plan_first) and a.plan_state != "approved") + RESUME_NOTE
         else:
             prompt = (a.task + RESUME_NOTE) if a.task else None
         if a.dismissed_at is not None:
@@ -961,10 +982,58 @@ def message_lead(db: DB, agent: Agent, sender_id: str | None) -> str | None:
     return f"copse delivered this message from {who}:"
 
 
-def send_message(db: DB, to_id: str, body: str, sender_id: str | None = None) -> str:
+def pulls_messages(db: DB, agent: Agent) -> bool:
+    """Whether messages from agents and copse to ``agent`` wait to be read with
+    read_messages (``message_delivery`` "pull", the default) instead of being
+    delivered. Only an interactive, hook-capable supervisor reads them."""
+    from copse.config import load_repo_config
+
+    if agent.mode != "interactive" or agent.headless or not get_provider(agent.provider).uses_hooks:
+        return False
+    ws = db.get_workspace(agent.workspace_id)
+    return (load_repo_config(ws.repo_root).message_delivery if ws else "pull") != "push"
+
+
+def unread_notice(db: DB, messages: list) -> str:
+    senders = list(dict.fromkeys(m.sender_id or "copse" for m in messages))
+    n = len(messages)
+    return (f"copse: {n} new message{'s' if n != 1 else ''} (from {', '.join(senders)}). "
+            "Call read_messages.")
+
+
+def render_unread(db: DB, messages: list) -> str:
+    """What read_messages returns: each message with its trust lead line."""
+    parts = []
+    for m in messages:
+        if m.sender_id:
+            parts.append(m.body)  # stored through format_message: sender and reply hint
+        else:
+            parts.append(f"[Message from copse]\n\n{m.body}")
+    return "\n\n---\n\n".join(parts)
+
+
+def send_message(db: DB, to_id: str, body: str, sender_id: str | None = None,
+                 person: bool = False) -> str:
     """Deliver now if the agent is idle; otherwise queue until it is.
-    Returns ``"delivered"`` or ``"queued"``."""
+    Returns ``"delivered"`` or ``"queued"``. ``person`` marks a message from
+    the person running copse, which is always pushed."""
     agent = get(db, to_id)
+    if not person and runs_process(agent) and is_alive(agent) and pulls_messages(db, agent):
+        # Keep the message unread and deliver only a notice, once for everything unread.
+        db.enqueue_held(agent.id, format_message(db, body, sender_id), sender_id)
+        claimed = db.claim_notice(agent.id)
+        if claimed is None:
+            return "queued"
+        try:
+            outcome = _send_message(db, agent, unread_notice(db, claimed), None)
+        except BaseException:
+            db.reset_notice(agent.id)
+            raise
+        return outcome
+    return _send_message(db, agent, body, sender_id)
+
+
+def _send_message(db: DB, agent: Agent, body: str, sender_id: str | None) -> str:
     if not runs_process(agent):
         raise AgentError(
             f"agent {agent.id} is a subagent run by its supervisor's own Agent tool, so copse "
@@ -1292,6 +1361,7 @@ def submit_review(db: DB, caller_id: str, approved: bool, summary: str) -> str:
     db.add_review(ws.id, sha, caller.id, approved, summary)
     if approved:
         db.bump_progress(autopilot.root_of(db, caller.id))
+    pipeline.note_review(db, ws, approved)
     verdict = "APPROVED" if approved else "CHANGES REQUESTED"
     text = f"Review of {ws.branch} (workspace {ws.id}) at {sha[:8]}: {verdict}\n\n{summary}"
     handled = pipeline.on_review(db, caller, ws, approved, summary)
@@ -1325,6 +1395,14 @@ def _stop(db: DB, agent: Agent) -> None:
         tmux.kill_window(window)
     procs.stop([agent.id], {agent.id: pane_pids})
     db.end_native_subagents(agent.id)
+
+
+def pause_worker(db: DB, agent: Agent) -> None:
+    """Stop one worker but keep its work, as ``pause`` does for a session: its
+    worktree, branch, queued messages and CLI session stay, and ``resume``
+    brings it back."""
+    _stop(db, agent)
+    db.set_status(agent.id, "paused")
 
 
 def kill(db: DB, agent_id: str) -> None:
@@ -1370,8 +1448,10 @@ def delegate(
     isolate: bool = True,
     branch: str | None = None,
     done_when: str | None = None,
+    plan_first: bool | None = None,
 ) -> tuple[Agent, Workspace]:
-    """Start a worker. With ``isolate``, the worker gets a new worktree whose
+    """Start a worker. ``plan_first`` (None: the repo's ``plan_first`` config)
+    makes it get a plan approved before it may edit. With ``isolate``, the worker gets a new worktree whose
     branch starts from the caller's current branch, so it sees the caller's
     committed work, and nobody edits the same files. Refuses beyond the
     repo's ``max_agents`` workers running at once."""
@@ -1382,6 +1462,8 @@ def delegate(
         pilot.check_capacity(db, caller.id if caller else None, load_repo_config(caller_ws.repo_root))
     except pilot.AutopilotError as e:
         raise AgentError(str(e)) from e
+    if plan_first is None:
+        plan_first = load_repo_config(caller_ws.repo_root).plan_first
     if isolate:
         caller_ws = workspaces.refresh_branch(db, caller_ws)
         # merge_into applies to the supervisor's workers; a worker's own
@@ -1403,7 +1485,7 @@ def delegate(
     # the new pane for up to 30 seconds.
     agent = spawn(
         db, ws, profile, prompt=task, parent_id=caller.id if caller else None, mode=mode,
-        done_when=done_when, background_setup=True,
+        done_when=done_when, background_setup=True, plan_first=bool(plan_first),
     )
     return agent, ws
 
@@ -1562,6 +1644,51 @@ def deliver_check_summary(db: DB, reviewer_id: str, ws: Workspace, cfg: RepoConf
 # -- hook entry point --------------------------------------------------------
 
 
+PLAN_GATED_TOOLS = ("Edit", "Write", "NotebookEdit")
+
+
+def submit_plan(db: DB, agent_id: str, plan: str) -> str:
+    """A plan_first worker proposes its plan: it goes to the parent as a
+    message and the worker waits (plan_state 'proposed') for approve_plan."""
+    agent = get(db, agent_id)
+    if not agent.plan_first:
+        return "This task isn't plan-first; go ahead and do it."
+    if agent.plan_state == "approved":
+        return "Your plan is already approved; go ahead."
+    if not plan.strip():
+        return "Give the plan."
+    if not agent.parent_id:
+        raise AgentError("no supervisor to send the plan to")
+    db.update_agent(agent.id, plan_state="proposed")
+    send_message(db, agent.parent_id,
+                 f"Worker {agent.id} proposes this plan and is waiting for your decision "
+                 f"(approve_plan agent_id={agent.id}):\n\n{plan.strip()}", sender_id=agent.id)
+    return "Plan sent. Stop now and wait for your supervisor's decision; don't edit files until it's approved."
+
+
+def approve_plan(db: DB, caller_id: str | None, agent_id: str, feedback: str = "",
+                 approved: bool = True) -> str:
+    """The worker's parent decides on its proposed plan; the worker is told."""
+    agent = get(db, agent_id)
+    if not agent.plan_first:
+        raise AgentError(f"{agent.id} isn't a plan-first worker")
+    if caller_id is None or agent.parent_id != caller_id:
+        raise AgentError(f"only {agent.id}'s supervisor can decide on its plan")
+    if agent.plan_state != "proposed":
+        raise AgentError(f"{agent.id} has no plan awaiting a decision")
+    feedback = feedback.strip()
+    if approved:
+        db.update_agent(agent.id, plan_state="approved")
+        text = "Your plan is approved: go ahead and implement it."
+    else:
+        db.update_agent(agent.id, plan_state="revise")
+        text = "Your plan needs changes: revise it and call submit_plan again. Don't edit files yet."
+    if feedback:
+        text += f"\n\nSupervisor's feedback: {feedback}"
+    send_message(db, agent.id, text, sender_id=caller_id)
+    return f"{'Approved' if approved else 'Asked for a revised plan from'} {agent.id}."
+
+
 def pre_tool_decision(db: DB, agent: Agent, payload: dict) -> dict | None:
     """Claude Code's PreToolUse hook: approve a Bash command when every
     simple command in it matches one of the profile's ``allowed_tools``
@@ -1569,7 +1696,17 @@ def pre_tool_decision(db: DB, agent: Agent, payload: dict) -> dict | None:
     the native loop gives those rules. Claude Code matches a rule against a
     compound command as a whole, so ``cd sub && git status`` would prompt
     even with ``Bash(git status:*)`` allowed. None leaves the decision to
-    Claude Code as usual: this never denies."""
+    Claude Code as usual. The one denial: a file edit by a plan_first worker
+    whose plan isn't approved yet."""
+    if payload.get("tool_name") in PLAN_GATED_TOOLS and agent.plan_first and agent.plan_state != "approved":
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                "copse: this task is plan-first. Don't edit files yet: call the submit_plan tool "
+                "(copse MCP server) with your plan and wait for your supervisor's approval, "
+                "which arrives as a message."),
+        }}
     if payload.get("tool_name") != "Bash":
         return None
     command = str((payload.get("tool_input") or {}).get("command", ""))
@@ -1650,6 +1787,18 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
         if msg:
             db.set_status(agent_id, "processing")
             return {"decision": "block", "reason": msg.body}
+        if agent.mode == "interactive" and db.unread_count(agent_id):
+            ap = db.get_autopilot(agent_id)
+            if ap is not None and ap.enabled and not payload.get("stop_hook_active"):
+                # An autopilot supervisor doesn't stop with mail it hasn't read.
+                db.set_status(agent_id, "processing")
+                return {"decision": "block", "reason": (
+                    "[copse autopilot] You have unread messages. Call read_messages "
+                    "before you stop.")}
+            claimed = None if payload.get("stop_hook_active") else db.claim_notice(agent_id)
+            if claimed:  # the notice never went out (or was lost): hand it over now
+                db.set_status(agent_id, "processing")
+                return {"decision": "block", "reason": unread_notice(db, claimed)}
         needs_report = agent.mode in REPORTING_MODES and agent.result is None
         if needs_report and not payload.get("stop_hook_active"):
             db.set_status(agent_id, "processing")
@@ -1680,6 +1829,12 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
     elif event == "codex-notify":
         # Codex's notify command runs when a turn completes; it can't block the
         # stop, so a queued message is typed into the pane instead.
+        from copse import quota
+
+        try:
+            quota.refresh_codex()
+        except OSError:
+            pass
         if payload.get("type") == "agent-turn-complete":
             db.set_status(agent_id, "idle")
             if db.pending_count(agent_id) and not agent.headless:

@@ -37,6 +37,14 @@ def user_profiles_dir() -> Path:
     return copse_home() / "agents"
 
 
+WEIGHTS = ("light", "medium", "heavy")
+DEFAULT_ROUTING = {
+    "light": ["developer-local", "developer"],
+    "medium": ["developer-codex", "developer"],
+    "heavy": ["developer-heavy", "developer"],
+}
+
+
 @dataclass
 class RepoConfig:
     setup: list[str] = field(default_factory=list)
@@ -56,12 +64,14 @@ class RepoConfig:
     max_agents: int = 4                # workers running at once per session; 0 means no cap
     check_timeout: int = 900           # seconds allowed for each check command
     usage_limit: int = 90              # autopilot stops pushing on at this % of the Claude usage limit
+    limit_cooldown_minutes: int | None = None  # how long a provider that hit its limit counts as unavailable (default 300 for Antigravity)
     graphify: bool | None = None       # point agents at graphify-out/graph.json (None: if it's there)
     stale_after: int = 30              # minutes before an idle, reported worker is closed; 0: never
     pipeline: bool = True              # copse reviews and merges reported branches itself (copse.pipeline)
     review_rounds: int = 2             # fix-and-re-review rounds the pipeline runs before asking the supervisor
     merge_into: str | None = None      # branch worker branches are cut from and merge into (None: the supervisor's / default branch)
     auto_merge_default_branch: bool = False  # let the pipeline merge into the repo's default branch on its own
+    plan_first: bool = False           # workers propose a plan and wait for approval before editing
     overlap: str = "block"           # a task whose files overlap a running one: "block" or "warn"
     # Worktree pool: pre-built worktrees (checked out, files copied, setup run)
     # that `create` claims instead of doing that work live. None here means
@@ -74,6 +84,11 @@ class RepoConfig:
     # this machine and it isn't running (see copse.native.serve).
     local_models: bool = True
     sidebar: str = "left"              # where the dashboard sits: "left" of the chat or "bottom"
+    learning: str = "off"              # "off" or an installed learning plugin's name (see copse.learning)
+    learning_candidates: list[str] = field(default_factory=list)  # profiles the learner may pick from
+    message_delivery: str = "pull"     # agent messages to an interactive supervisor: "pull" (a notice, then read_messages) or "push" (the text itself)
+    # Weight routing: task weight -> profiles to try, in order (see autopilot.choose_profile).
+    routing: dict[str, list[str]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_ROUTING.items()})
 
 
 def _merge_commands(shared: list[str], local: object) -> list[str]:
@@ -126,11 +141,18 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
                 "reviewer", "review_profile", "pre_commit", "max_agents", "check_timeout",
                 "usage_limit", "pool_size", "graphify", "stale_after", "pipeline",
                 "review_rounds", "overlap", "local_models", "merge_into",
-                "auto_merge_default_branch", "sidebar"):
+                "auto_merge_default_branch", "sidebar", "plan_first", "learning",
+                "learning_candidates", "limit_cooldown_minutes", "message_delivery"):
         if key in local:
             setattr(cfg, key, local[key])
         elif key in shared:
             setattr(cfg, key, shared[key])
+    for source in (shared, local):  # per tier, so a repo can override one and keep the rest
+        routing = source.get("routing")
+        if isinstance(routing, dict):
+            for tier, names in routing.items():
+                if tier in WEIGHTS and isinstance(names, list):
+                    cfg.routing[tier] = [n for n in names if isinstance(n, str)]
     if cfg.pool_size is None:
         cfg.pool_size = 1 if cfg.setup else 0
     return cfg

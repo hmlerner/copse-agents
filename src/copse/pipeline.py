@@ -30,7 +30,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-from copse import agents, autopilot, codemap, gates, git, history, tasks, workspaces
+from copse import agents, autopilot, codemap, gates, git, history, learning, tasks, workspaces
 from copse.config import RepoConfig, load_repo_config
 from copse.db import DB, Agent, Workspace
 
@@ -55,6 +55,28 @@ def _tell(db: DB, parent_id: str | None, text: str, sender_id: str | None) -> No
             pass
 
 
+def _note(db: DB, ws: Workspace, worker: Agent | None = None, **event) -> None:
+    """Tell a learning plugin about ``ws``'s worker (a no-op unless the repo
+    has one selected; never raises)."""
+    try:
+        cfg = load_repo_config(ws.repo_root)
+        learning.note(db, cfg, worker or agents.workspace_worker(db, ws), ws, **event)
+    except Exception:
+        pass
+
+
+def note_review(db: DB, ws: Workspace, approved: bool) -> None:
+    _note(db, ws, approved=approved)
+
+
+def note_removed_unmerged(db: DB, ws: Workspace) -> None:
+    _note(db, ws, merged=False)
+
+
+def _escalate(db: DB, ws: Workspace, worker: Agent | None) -> None:
+    _note(db, ws, worker, escalated=True)
+
+
 # -- stage 1: a worker reported ---------------------------------------------------
 
 
@@ -74,6 +96,7 @@ def on_report(db: DB, worker: Agent, ws: Workspace, result: str) -> bool:
         return False
     if git.dirty_files(ws.path):
         db.update_agent(worker.id, pipeline=None)
+        _escalate(db, ws, worker)
         _tell(db, parent.id,
               f"[copse pipeline] {worker.id} reported on `{ws.branch}` but left uncommitted "
               f"changes, so it can't be reviewed or merged. Its report:\n\n{result}", worker.id)
@@ -82,6 +105,7 @@ def on_report(db: DB, worker: Agent, ws: Workspace, result: str) -> bool:
         reviewer = agents.request_review(db, parent, ws, None, None, cfg)
     except agents.AgentError as e:
         db.update_agent(worker.id, pipeline=None)
+        _escalate(db, ws, worker)
         _tell(db, parent.id,
               f"[copse pipeline] {worker.id} reported on `{ws.branch}`, but no reviewer could "
               f"start ({e}). Review it yourself with workspace_diff, then merge_workspace.\n\n"
@@ -114,6 +138,7 @@ def on_review(db: DB, reviewer: Agent, ws: Workspace, approved: bool, summary: s
         if not cfg.auto_merge_default_branch and ws.base_branch \
                 and ws.base_branch == git.default_branch(ws.repo_root):
             db.update_agent(worker.id, pipeline=None)
+            _escalate(db, ws, worker)
             _tell(db, parent_id,
                   f"[copse pipeline] `{ws.branch}` was approved, but its base `{ws.base_branch}` "
                   "is the repo's default branch, which copse doesn't merge into on its own. "
@@ -138,6 +163,7 @@ def on_review(db: DB, reviewer: Agent, ws: Workspace, approved: bool, summary: s
                 _tell(db, parent_id, f"[copse pipeline] {ws.branch}: {note}", worker.id)
         else:
             db.update_agent(worker.id, pipeline=None)
+            _escalate(db, ws, worker)
             _tell(db, parent_id,
                   f"[copse pipeline] `{ws.branch}` was approved but couldn't be merged: {text}\n"
                   "This needs you: fix it (or have the worker fix it with send_message), then "
@@ -158,6 +184,7 @@ def on_review(db: DB, reviewer: Agent, ws: Workspace, approved: bool, summary: s
         except agents.AgentError:
             pass
     db.update_agent(worker.id, pipeline=None)
+    _escalate(db, ws, worker)
     _tell(db, parent_id,
           f"[copse pipeline] `{ws.branch}` still has review findings after {rounds - 1} fix "
           f"round(s). This needs you: decide what to do.\n\nLatest review ({reviewer.id}):\n"
@@ -250,6 +277,7 @@ def merge(db: DB, caller: Agent | None, ws: Workspace, squash: bool = False) -> 
         db, ws.repo_root, "merge", agent=caller, with_usage=True, branch=ws.branch,
         task=f"merge {ws.branch} into {ws.base_branch}", result=text,
     )
+    _note(db, ws, merged=True, checks_passed=True)
     tasks.on_merged(db, ws)
     codemap.refresh_later(ws.repo_root)
     if pilot:

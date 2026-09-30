@@ -175,7 +175,7 @@ def test_usage_limit_pauses_autopilot(db, root, monkeypatch):
     agent, _ = root
     with_goal(db)
     monkeypatch.setattr(autopilot, "active_workers", lambda db, rid: [])
-    autopilot.record_usage({"rate_limits": {"five_hour": {"used_percentage": 93, "resets_at": 0}}})
+    autopilot.record_usage({"rate_limits": {"five_hour": {"used_percentage": 93, "resets_at": None}}})
     assert autopilot.usage()["used"] == 93
     assert autopilot.on_stop(db, agent, {}) is None
     ap = db.get_autopilot("boss")

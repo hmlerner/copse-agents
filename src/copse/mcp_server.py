@@ -11,7 +11,7 @@ import time
 
 from mcp.server.mcpserver import MCPServer
 
-from copse import agents, autopilot, codemap, gates, git, history, pipeline, sessions, tasks, workspaces
+from copse import agents, autopilot, codemap, gates, git, history, pipeline, quota, sessions, tasks, workspaces
 from copse.config import RepoConfig, load_repo_config
 from copse.db import DB, Agent, Workspace
 from copse.profiles import list_profiles
@@ -163,11 +163,19 @@ async def handoff(
     agent_profile: str = "", task: str = "", isolate: bool = True, branch: str | None = None,
     wait_seconds: int = DEFAULT_WAIT_SECONDS, done_when: str | None = None,
     files: list[str] | None = None, depends_on: list[str] | None = None,
+    plan_first: bool | None = None, weight: str | None = None,
 ) -> str:
     """Give a task to a new worker agent and wait for its result.
 
     agent_profile is optional: when empty, the current unverified milestone's
-    profile is used, else the repo's default agent.
+    profile is used, else `weight` routes to an available profile, else the
+    repo's default agent.
+
+    weight: "light", "medium" or "heavy" (when you don't need a specific
+    profile): copse picks an available profile for the tier and the reply says
+    which and why. light = small, well-specified, mechanical (docs, renames,
+    simple tests); medium = a normal feature or bugfix in one area; heavy =
+    design-heavy, cross-cutting, subtle bugs, hard reasoning.
 
     Waits up to wait_seconds (default 4 minutes). If the worker isn't done by
     then, this returns "still running": call wait_for_worker to keep waiting,
@@ -191,14 +199,20 @@ async def handoff(
     aren't yet, this task is queued instead of starting, and started
     automatically (cut from your branch as it stands then) once
     merge_workspace resolves them. list_tasks shows what's queued.
+
+    plan_first: the worker must first send a plan with submit_plan and wait
+    for your approve_plan before it may edit files (default: the repo's
+    `plan_first` config). Use it for large or risky tasks.
     """
     def run() -> str:
         db = DB()
         caller, ws = _caller(db)
         if not task.strip():
             return "Give the worker a task."
+        why: list[str] = []
         try:
-            profile = autopilot.resolve_profile(db, caller.id, ws.repo_root, agent_profile)
+            profile, _ = autopilot.choose_profile(
+                db, caller.id, ws.repo_root, agent_profile, task, files, weight, why)
         except autopilot.AutopilotError as e:
             return str(e)
         try:
@@ -208,9 +222,11 @@ async def handoff(
         if unmet:
             t = tasks.enqueue(
                 db, caller, ws, profile, task,"handoff", isolate=isolate, branch=branch,
-                done_when=done_when, files=files, depends_on=depends_on,
+                done_when=done_when, files=files, depends_on=depends_on, plan_first=plan_first,
+                weight=weight,
             )
-            return f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
+            return (f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
+                    + "".join(f"\nprofile: {w}" for w in why))
         warning = tasks.overlap_warning(db, ws, files)
         if warning and load_repo_config(ws.repo_root).overlap == "block":
             return (f"Not started: this task {warning}. Two workers editing the same files "
@@ -218,16 +234,18 @@ async def handoff(
                     "depends_on so it starts once that branch has merged.")
         worker, wws = agents.delegate(
             db, caller, ws, profile, task,"handoff", isolate=isolate, branch=branch,
-            done_when=done_when,
+            done_when=done_when, plan_first=plan_first,
         )
         tasks.record_started(
             db, ws, worker, profile, task,"handoff", isolate=isolate, branch=branch,
-            done_when=done_when, files=files, depends_on=depends_on,
+            done_when=done_when, files=files, depends_on=depends_on, weight=weight,
         )
         if not agents.runs_process(worker):
             return agents.subagent_brief(worker, wws)
         missing = agents.add_dirs_warning(worker, wws)
         result = _await_worker(db, worker.id, wait_seconds)
+        for w in why:
+            result += f"\n\nProfile: {w}"
         for w in (warning, missing):
             if w:
                 result += f"\n\nWarning: {w}"
@@ -251,12 +269,20 @@ async def wait_for_worker(agent_id: str, wait_seconds: int = DEFAULT_WAIT_SECOND
 async def assign(
     agent_profile: str = "", task: str = "", isolate: bool = True, branch: str | None = None,
     done_when: str | None = None, files: list[str] | None = None,
-    depends_on: list[str] | None = None,
+    depends_on: list[str] | None = None, plan_first: bool | None = None,
+    weight: str | None = None,
 ) -> str:
     """Start a worker agent on a task and return immediately.
 
     agent_profile is optional: when empty, the current unverified milestone's
-    profile is used, else the repo's default agent.
+    profile is used, else `weight` routes to an available profile, else the
+    repo's default agent.
+
+    weight: "light", "medium" or "heavy" (when you don't need a specific
+    profile): copse picks an available profile for the tier and the reply says
+    which and why. light = small, well-specified, mechanical (docs, renames,
+    simple tests); medium = a normal feature or bugfix in one area; heavy =
+    design-heavy, cross-cutting, subtle bugs, hard reasoning.
 
     When it finishes, its result arrives in your conversation as a message.
     Isolation works as for handoff. Use this to run several workers in parallel.
@@ -271,14 +297,20 @@ async def assign(
     aren't yet, this task is queued instead of starting, and started
     automatically (cut from your branch as it stands then) once
     merge_workspace resolves them. list_tasks shows what's queued.
+
+    plan_first: the worker must first send a plan with submit_plan and wait
+    for your approve_plan before it may edit files (default: the repo's
+    `plan_first` config). Use it for large or risky tasks.
     """
     def run() -> str:
         db = DB()
         caller, ws = _caller(db)
         if not task.strip():
             return "Give the worker a task."
+        why: list[str] = []
         try:
-            profile = autopilot.resolve_profile(db, caller.id, ws.repo_root, agent_profile)
+            profile, learned = autopilot.choose_profile(
+                db, caller.id, ws.repo_root, agent_profile, task, files, weight, why)
         except autopilot.AutopilotError as e:
             return str(e)
         try:
@@ -288,9 +320,11 @@ async def assign(
         if unmet:
             t = tasks.enqueue(
                 db, caller, ws, profile, task,"assign", isolate=isolate, branch=branch,
-                done_when=done_when, files=files, depends_on=depends_on,
+                done_when=done_when, files=files, depends_on=depends_on, plan_first=plan_first,
+                weight=weight,
             )
-            return f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
+            return (f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
+                    + "".join(f"\nprofile: {w}" for w in why))
         warning = tasks.overlap_warning(db, ws, files)
         if warning and load_repo_config(ws.repo_root).overlap == "block":
             return (f"Not started: this task {warning}. Two workers editing the same files "
@@ -298,21 +332,24 @@ async def assign(
                     "depends_on so it starts once that branch has merged.")
         worker, wws = agents.delegate(
             db, caller, ws, profile, task,"assign", isolate=isolate, branch=branch,
-            done_when=done_when,
+            done_when=done_when, plan_first=plan_first,
         )
         tasks.record_started(
             db, ws, worker, profile, task,"assign", isolate=isolate, branch=branch,
-            done_when=done_when, files=files, depends_on=depends_on,
+            done_when=done_when, files=files, depends_on=depends_on, weight=weight,
         )
         if not agents.runs_process(worker):
             return agents.subagent_brief(worker, wws)
         text = f"Started worker {worker.id} ({worker.profile}) in workspace {wws.id} on branch {wws.branch}."
+        for w in why:
+            text += f"\nprofile: {w}"
+        if learned and not why:
+            text += f"\nprofile chosen by learning: {profile}"
         for w in (warning, agents.add_dirs_warning(worker, wws)):
             if w:
                 text += f"\nWarning: {w}"
-        u = autopilot.usage()
-        if u and u["used"] >= load_repo_config(wws.repo_root).usage_limit - 15:
-            text += f"\nNote: {autopilot.usage_note(u)}."
+        for n in quota.notes(wws.repo_root):
+            text += f"\nNote: {n}."
         return text
 
     return await asyncio.to_thread(run)
@@ -324,6 +361,50 @@ def send_message(to_agent_id: str, message: str) -> str:
     db = DB()
     caller, _ = _caller(db)
     return agents.send_message(db, to_agent_id, message, caller.id if caller else None)
+
+
+@mcp.tool()
+def read_messages() -> str:
+    """Read your unread messages from agents and copse (marks them read). Call
+    it when a "copse: N new messages" notice arrives, or when you're about to
+    stop."""
+    db = DB()
+    caller, _ = _caller(db)
+    if not caller:
+        return "Not running as a copse agent; no messages."
+    found = db.read_held(caller.id)
+    if not found:
+        return "No unread messages."
+    return agents.render_unread(db, found)
+
+
+@mcp.tool()
+def submit_plan(plan: str) -> str:
+    """Plan-first workers: call this with a short plan (files to change, how,
+    and how you'll test) before editing anything, then stop and wait for your
+    supervisor's decision, which arrives as a message."""
+    db = DB()
+    caller, _ = _caller(db)
+    if not caller:
+        return "Not running as a copse agent; nothing to send the plan to."
+    try:
+        return agents.submit_plan(db, caller.id, plan)
+    except agents.AgentError as e:
+        return str(e)
+
+
+@mcp.tool()
+def approve_plan(agent_id: str, feedback: str = "", approved: bool = True) -> str:
+    """Decide on the plan a plan-first worker proposed with submit_plan. With
+    approved=false (or feedback) the worker revises it and submits again; the
+    worker is sent your decision and feedback. Only the worker's supervisor
+    may decide."""
+    db = DB()
+    caller, _ = _caller(db)
+    try:
+        return agents.approve_plan(db, caller.id if caller else None, agent_id, feedback, approved)
+    except agents.AgentError as e:
+        return str(e)
 
 
 @mcp.tool()
@@ -383,6 +464,19 @@ def list_tasks() -> str:
     db = DB()
     _, here = _caller(db)
     return tasks.list_text(db, here.repo_root)
+
+
+@mcp.tool()
+def cancel_task(task_id: str, reason: str = "") -> str:
+    """Cancel a queued (pending) task you gave to assign/handoff, e.g. to
+    re-plan. Tasks waiting on it are cancelled too. Only the task's caller or
+    its session root can cancel it, and a task that has started can't be."""
+    db = DB()
+    caller, _ = _caller(db)
+    try:
+        return tasks.cancel(db, caller, task_id, reason)
+    except ValueError as e:
+        return f"Error: {e}"
 
 
 @mcp.tool()
@@ -509,6 +603,7 @@ def remove_workspace(workspace: str, delete_branch: bool = False, force: bool = 
             pass
     if unmerged:
         tasks.on_removed_unmerged(db, ws)
+        pipeline.note_removed_unmerged(db, ws)
     removed = workspaces.remove(db, ws, force=force, delete_branch=delete_branch)
     return f"Removed {ws.id}. {removed.branch_note or 'branch deleted'}"
 
@@ -587,7 +682,10 @@ def get_progress() -> str:
     """Autopilot: the goal, each milestone with its check and last result."""
     db = DB()
     found = _session(db)
-    return found if isinstance(found, str) else autopilot.progress(db, found[0])
+    if isinstance(found, str):
+        return found
+    text = autopilot.progress(db, found[0])
+    return "\n".join([text, *(f"Note: {n}." for n in quota.notes(found[1].repo_root))])
 
 
 @mcp.tool()

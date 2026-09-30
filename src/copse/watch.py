@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import curses
 import os
+import re
 import shutil
 import subprocess
 import textwrap
@@ -194,6 +195,11 @@ def render_autopilot(pilot: dict, width: int) -> list[Line]:
     total = len(pilot["milestones"])
     state = {"done": ("goal reached", "ok"), "blocked": ("needs you", "alert"),
              "stalled": ("stalled: needs you", "alert")}.get(pilot["state"])
+    if pilot["state"] == "usage_paused":
+        until = pilot.get("usage_resets_at")
+        when = (f" until {time.strftime('%-I:%M%p', time.localtime(until)).lower()}"
+                if isinstance(until, (int, float)) else "")
+        state = (f"paused for usage{when}", "alert")
     parts = [f"{done} of {total} verified"]
     if state:
         parts.append(state[0])
@@ -203,7 +209,12 @@ def render_autopilot(pilot: dict, width: int) -> list[Line]:
     if pilot["state"] in ("blocked", "stalled") and pilot.get("note"):
         lines += [Line(t, "dim") for t in _wrap(pilot["note"], width, "  ")]
     u = pilot.get("usage")
-    if u and u["used"] >= 75:
+    if "quota" in pilot:
+        # The per-provider notes (Claude's included); a near-full one is an alert.
+        for n in pilot["quota"]:
+            hot = any(int(p) >= 75 for p in re.findall(r"(\d+)% of", n)) or "limit reached" in n
+            lines += [Line(t, "alert" if hot else "dim") for t in _wrap(n, width, "  ")]
+    elif u and u["used"] >= 75:
         from copse.autopilot import usage_note
 
         lines += [Line(t, "alert") for t in _wrap(usage_note(u), width, "  ")]
@@ -252,6 +263,8 @@ def render_agent(a: dict, ws: dict, now: float, width: int) -> list[Line]:
     detail = [label + (f" for {ago(now - since)}" if since else "")]
     if a.get("pending"):
         detail.append(f"{plural(a['pending'], 'message')} queued")
+    if a.get("unread"):
+        detail.append(f"✉ {a['unread']} unread")
     if a.get("tokens"):
         detail.append(a["tokens"])
     detail.append(a["id"][:6])

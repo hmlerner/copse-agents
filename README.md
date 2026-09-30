@@ -173,6 +173,14 @@ or put the goal in `.copse/goals.md`, and it works like a project manager:
    merge first): a task with unmet dependencies is queued instead of started,
    and starts automatically, cut from the updated base, once
    `merge_workspace` resolves them. `list_tasks` shows what's queued.
+   `assign`/`handoff` also take `plan_first` (default: the `plan_first` config
+   key): the worker reads the code, then calls `submit_plan` with a short plan
+   and waits. The plan reaches the supervisor as a message; `approve_plan`
+   approves it, or (`approved=false`, with feedback) sends it back for a
+   revision. For Claude workers copse's PreToolUse hook refuses Edit, Write
+   and NotebookEdit until the plan is approved; other CLIs are only told to
+   wait. Autopilot doesn't count a worker waiting on approval as stalled, and
+   reminds the supervisor about plans awaiting a decision.
 3. **Gated merges.** A branch merges only when everything is committed, a
    reviewer agent has approved that exact commit, your pre-commit hooks pass,
    and your `checks` pass. copse runs these itself before `merge_workspace`,
@@ -208,10 +216,30 @@ check: npm test -- settings
 profile: developer-cheap
 ```
 
+A session that loaded its goal from `goals.md` writes each milestone's status
+back to that file after every check, as a line under the milestone, for
+example `status: passed at abc1234 (2026-09-29)` (`passed`, `failed` or
+`pending`, a short commit sha and a date). The rest of the file is left byte
+for byte as you wrote it. Since `goals.md` may be committed, it stays free of
+session data: no agent or session ids, check output, notes, usage or
+questions ever go in. A status line is information only: a new session
+starts every milestone as pending and re-runs the checks, never trusting it.
+A session stops writing when it's handed over, paused, or has autopilot off,
+or once its goal was replaced from the chat. From a linked worktree, it writes
+the `goals.md` it loaded (the main checkout's), never another session's. A
+write that fails never fails the check.
+
 `copse autopilot` shows progress, `copse autopilot check` runs the checks
 now, and `copse autopilot off` (or `on`) hands the wheel back (or takes it
 again). `copse --no-autopilot`, or `"autopilot": false` in the repo config,
 starts without it.
+
+When your Claude usage reaches `usage_limit`, autopilot pauses for usage: its
+running Claude workers stop (worktrees, branches, queued messages and sessions
+are kept) and the sidebar says "paused for usage until <time>". Once the usage
+window resets, copse restarts those workers on its own, sets autopilot running
+again and tells the supervisor what it resumed. Speaking to the supervisor
+doesn't end the pause.
 
 To track your Claude usage, copse gives the agents it launches a status line.
 It records the usage percentage Claude Code reports, then prints whatever
@@ -232,6 +260,7 @@ your own status line prints, so what you see doesn't change.
 | `copse transfer [REPO] [--from SESSION] [-b BRANCH]` | move a scratch session's work into a real repo |
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
+| `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
 | `copse attach / cd / open [WS]` | tmux session / path / editor |
 | `copse status / diff [--stat] [WS]` | compared with the base branch (committed + uncommitted) |
@@ -257,11 +286,15 @@ knowing them helps when you tell the supervisor how to work.
 |---|---|---|
 | `assign` / `handoff` / `wait_for_worker` | supervisor | start a worker (return now / wait for its result / keep waiting) |
 | `send_message` | any agent | message another agent; delivered when it's idle |
+| `read_messages` | supervisor | read the messages agents and copse sent you and mark them read; with `message_delivery` `"pull"` (the default) you get a one-line "N new messages" notice instead of each message |
 | `list_agents` / `list_tasks` / `list_agent_profiles` | supervisor | who's running, what's queued, which profiles exist |
+| `cancel_task` | supervisor | cancel a queued task (and its dependents) to re-plan |
 | `workspace_diff` | supervisor | a worker branch's changes against its base |
 | `request_review` / `submit_review` | supervisor / reviewer | start a reviewer on a branch / record its verdict |
 | `merge_workspace` / `remove_workspace` | supervisor | merge through the gates / delete the worktree |
 | `report_result` | worker | finish a task and hand back the result |
+| `submit_plan` | worker | a `plan_first` worker proposes its plan and waits for approval before editing |
+| `approve_plan` | supervisor | approve a worker's plan, or send it back with feedback (`approved=false`) |
 | `complete_subagent` | supervisor | record the result of a `subagent`-profile task |
 | `set_goal` / `get_progress` / `check_milestone` | supervisor | autopilot's goal, its progress, and running the checks |
 | `need_user` | supervisor | stop autopilot and ask you a question |
@@ -288,6 +321,23 @@ it's the place to look for what an agent did after its session is gone. It's
 capped at 5000 rows per repo, oldest dropped first. Recording usage or
 history never blocks a report, merge or check: a failure there is logged and
 skipped.
+
+## Provider quota
+
+copse keeps one place (`~/.copse/quota.json`) that knows how close each
+provider is to its subscription limit, and shows a note per provider that has
+data (e.g. `Codex at 82% of its weekly limit, resets Thu 9:00am`) in `assign`
+replies, `get_progress`, the sidebar's autopilot block and `copse doctor`.
+It only uses what the CLIs write locally, and never reads a CLI's login
+token or auth files or calls a provider's servers:
+
+- **Claude**: the status line data Claude Code gives copse.
+- **Codex**: the last `rate_limits` event in its newest session rollout under
+  `~/.codex/sessions` (windows are told apart by their length: 5-hour,
+  weekly, monthly), refreshed on each turn and when asked.
+- **Antigravity**: no numbers; when it reports a limit error the provider counts
+  as unavailable for `limit_cooldown_minutes` (default 300).
+- **Native**: full headroom while the local model server answers, none while it doesn't.
 
 ## Repo config: `.copse/config.json`
 
@@ -323,17 +373,62 @@ Autopilot, merge gates and cleanup:
 | `max_agents` | `4` | workers running at once per session (`0`: no cap) |
 | `check_timeout` | `900` | seconds each check may take |
 | `usage_limit` | `90` | autopilot stops pushing on at this % of your Claude usage limit |
+| `limit_cooldown_minutes` | `300` for Antigravity | how long a provider that hit its limit counts as unavailable |
 | `graphify` | if the graph is there | point agents at the repo's [graphify](https://github.com/safishamsi/graphify) code map (`false` turns it off) |
 | `stale_after` | `30` | minutes before a worker that reported and sat idle is closed (`0`: never) |
 | `pipeline` | `true` | copse reviews and merges reported branches itself; the supervisor gets one message per branch |
 | `review_rounds` | `2` | fix-and-re-review rounds the pipeline runs before handing findings to the supervisor |
 | `merge_into` | none | branch that worker branches are cut from and merge into, whatever branch the supervisor is on |
 | `auto_merge_default_branch` | `false` | let the pipeline merge into the repo's default branch (origin HEAD, else `main`/`master`) on its own; by default it sends a "needs you" message instead, and you run `merge_workspace` yourself (manual merges are never gated) |
+| `plan_first` | `false` | workers propose a plan (`submit_plan`) and wait for `approve_plan` before editing |
 | `overlap` | `"block"` | a task whose `files` overlap a running task's is refused (`"warn"` starts it with a warning) |
 | `pool_size` | `1` if `setup` is set, else `0` | pre-built worktrees (checked out, files copied, setup run) kept ready so a new worker doesn't wait on `setup`; `0` disables it |
 | `add_dirs` | `[]` | directories outside the worktree that Claude Code agents may use (`--add-dir`; full tool access, see "Directories outside the workspace") |
 | `local_models` | `true` | when a native profile points at Ollama on this machine and it isn't running, `copse` starts `ollama serve` in the background (with the context length the profiles need) and loads their models; `false` leaves it to you |
 | `sidebar` | `"left"` | where the dashboard sits in each window: `"left"` of the chat, or `"bottom"` (full-width rows under it) |
+| `message_delivery` | `"pull"` | how agent and copse messages reach an interactive supervisor: `"pull"` keeps them unread and delivers one notice ("copse: 2 new messages (from 9f742c5c, pipeline). Call read_messages."; the sidebar shows an unread count), `"push"` delivers each message's text. Messages you send (`copse send`, typing) and messages to workers are always pushed |
+| `learning` | `"off"` | the name of an installed learning plugin, which records how worker tasks turned out and suggests profiles (see below) |
+| `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
+| `routing` | see below | for each task weight (`light`, `medium`, `heavy`), the profiles `assign`/`handoff` try in order |
+
+### Routing by weight
+
+The supervisor sizes a task and passes `weight` (`"light"`, `"medium"` or
+`"heavy"`) to `assign`/`handoff`; copse picks an available profile for that tier.
+Light is small, well-specified, mechanical work (docs, renames, simple tests);
+medium is a normal feature or bugfix in one area; heavy is design-heavy,
+cross-cutting work, subtle bugs or hard reasoning. The `routing` config maps each
+tier to profile names, tried in order (defaults shown; set one tier and the others
+keep theirs):
+
+```json
+{
+  "routing": {
+    "light":  ["developer-local", "developer"],
+    "medium": ["developer-codex", "developer"],
+    "heavy":  ["developer-heavy", "developer"]
+  }
+}
+```
+
+`developer-codex` runs on Codex; `developer-heavy` on Claude Fable at high effort.
+A profile is skipped when its CLI isn't installed (`claude`, `codex`, `agy`), the
+local model server isn't answering, or its provider is at your `usage_limit`. If a
+learning plugin is selected it chooses among the profiles left; otherwise the first
+wins. When every candidate is out, the repo's `default_agent` runs. The reply says
+what was picked and why, e.g. `weight medium -> developer (Codex at 93%, skipped developer-codex)`.
+An `agent_profile` you pass, or a milestone's `profile`, always wins over weight.
+
+**Learning plugins.** copse can hand what happens to each worker task (review
+verdicts, times the supervisor had to step in, merged or abandoned, tokens, time)
+to a learning plugin, and ask it to pick a profile from `learning_candidates` when
+`assign` gets none and no milestone names one; the reply then says
+`profile chosen by learning: X`. A profile named by you or by a milestone always
+wins. copse ships no plugin: a plugin is a package registering a `copse.learning`
+entry point (see `copse/learning.py` for the interface), installed with
+`uv tool install copse-agents --with <plugin>` and selected with
+`"learning": "<name>"`. A plugin that's missing or fails never breaks a review,
+merge or delegation.
 
 **Closing and cleaning up.** Press `x` on an agent in the sidebar (twice for one
 that's still running) or run `copse close <id>` to stop it and hide it. Stopping means
