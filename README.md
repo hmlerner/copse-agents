@@ -228,6 +228,7 @@ your own status line prints, so what you see doesn't change.
 | `copse transfer [REPO] [--from SESSION] [-b BRANCH]` | move a scratch session's work into a real repo |
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
+| `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
 | `copse attach / cd / open [WS]` | tmux session / path / editor |
 | `copse status / diff [--stat] [WS]` | compared with the base branch (committed + uncommitted) |
@@ -330,6 +331,19 @@ Autopilot, merge gates and cleanup:
 | `add_dirs` | `[]` | directories outside the worktree that Claude Code agents may use (`--add-dir`; full tool access, see "Directories outside the workspace") |
 | `local_models` | `true` | when a native profile points at Ollama on this machine and it isn't running, `copse` starts `ollama serve` in the background (with the context length the profiles need) and loads their models; `false` leaves it to you |
 | `sidebar` | `"left"` | where the dashboard sits in each window: `"left"` of the chat, or `"bottom"` (full-width rows under it) |
+| `learning` | `"off"` | the name of an installed learning plugin, which records how worker tasks turned out and suggests profiles (see below) |
+| `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
+
+**Learning plugins.** copse can hand what happens to each worker task (review
+verdicts, times the supervisor had to step in, merged or abandoned, tokens, time)
+to a learning plugin, and ask it to pick a profile from `learning_candidates` when
+`assign` gets none and no milestone names one; the reply then says
+`profile chosen by learning: X`. A profile named by you or by a milestone always
+wins. copse ships no plugin: a plugin is a package registering a `copse.learning`
+entry point (see `copse/learning.py` for the interface), installed with
+`uv tool install copse-agents --with <plugin>` and selected with
+`"learning": "<name>"`. A plugin that's missing or fails never breaks a review,
+merge or delegation.
 
 **Closing and cleaning up.** Press `x` on an agent in the sidebar (twice for one
 that's still running) or run `copse close <id>` to stop it and hide it. Stopping means
