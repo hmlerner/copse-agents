@@ -364,6 +364,21 @@ def send_message(to_agent_id: str, message: str) -> str:
 
 
 @mcp.tool()
+def read_messages() -> str:
+    """Read your unread messages from agents and copse (marks them read). Call
+    it when a "copse: N new messages" notice arrives, or when you're about to
+    stop."""
+    db = DB()
+    caller, _ = _caller(db)
+    if not caller:
+        return "Not running as a copse agent; no messages."
+    found = db.read_held(caller.id)
+    if not found:
+        return "No unread messages."
+    return agents.render_unread(db, found)
+
+
+@mcp.tool()
 def submit_plan(plan: str) -> str:
     """Plan-first workers: call this with a short plan (files to change, how,
     and how you'll test) before editing anything, then stop and wait for your

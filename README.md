@@ -282,6 +282,7 @@ knowing them helps when you tell the supervisor how to work.
 |---|---|---|
 | `assign` / `handoff` / `wait_for_worker` | supervisor | start a worker (return now / wait for its result / keep waiting) |
 | `send_message` | any agent | message another agent; delivered when it's idle |
+| `read_messages` | supervisor | read the messages agents and copse sent you and mark them read; with `message_delivery` `"pull"` (the default) you get a one-line "N new messages" notice instead of each message |
 | `list_agents` / `list_tasks` / `list_agent_profiles` | supervisor | who's running, what's queued, which profiles exist |
 | `cancel_task` | supervisor | cancel a queued task (and its dependents) to re-plan |
 | `workspace_diff` | supervisor | a worker branch's changes against its base |
@@ -381,6 +382,7 @@ Autopilot, merge gates and cleanup:
 | `add_dirs` | `[]` | directories outside the worktree that Claude Code agents may use (`--add-dir`; full tool access, see "Directories outside the workspace") |
 | `local_models` | `true` | when a native profile points at Ollama on this machine and it isn't running, `copse` starts `ollama serve` in the background (with the context length the profiles need) and loads their models; `false` leaves it to you |
 | `sidebar` | `"left"` | where the dashboard sits in each window: `"left"` of the chat, or `"bottom"` (full-width rows under it) |
+| `message_delivery` | `"pull"` | how agent and copse messages reach an interactive supervisor: `"pull"` keeps them unread and delivers one notice ("copse: 2 new messages (from 9f742c5c, pipeline). Call read_messages."; the sidebar shows an unread count), `"push"` delivers each message's text. Messages you send (`copse send`, typing) and messages to workers are always pushed |
 | `learning` | `"off"` | the name of an installed learning plugin, which records how worker tasks turned out and suggests profiles (see below) |
 | `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
 | `routing` | see below | for each task weight (`light`, `medium`, `heavy`), the profiles `assign`/`handoff` try in order |

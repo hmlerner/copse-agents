@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS inbox (
     sender_id TEXT,
     body TEXT NOT NULL,
     created_at REAL NOT NULL,
-    delivered_at REAL
+    delivered_at REAL,
+    held INTEGER,                  -- 1: a pull-mode message, read with read_messages instead of being delivered
+    noticed_at REAL                -- when a "new messages" notice covering it went out
 );
 -- Autopilot: one row per session (keyed by its supervisor) that has it on.
 CREATE TABLE IF NOT EXISTS autopilot (
@@ -395,6 +397,8 @@ class Message:
     body: str
     created_at: float
     delivered_at: float | None
+    held: int | None = None
+    noticed_at: float | None = None
 
 
 @dataclass
@@ -479,6 +483,10 @@ class DB:
         mark_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(history_usage_mark)")}
         if "transcript_path" not in mark_cols:
             self.conn.execute("ALTER TABLE history_usage_mark ADD COLUMN transcript_path TEXT")
+        inbox_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(inbox)")}
+        for col, kind in (("held", "INTEGER"), ("noticed_at", "REAL")):
+            if col not in inbox_cols:
+                self.conn.execute(f"ALTER TABLE inbox ADD COLUMN {col} {kind}")
         tables = {r["name"] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "sidebars" not in tables:
             self.conn.execute(
@@ -720,7 +728,7 @@ class DB:
         with self.tx() as c:
             row = c.execute(
                 "SELECT * FROM inbox WHERE agent_id=? AND delivered_at IS NULL "
-                "ORDER BY id LIMIT 1",
+                "AND COALESCE(held,0)=0 ORDER BY id LIMIT 1",
                 (agent_id,),
             ).fetchone()
             if not row:
@@ -756,9 +764,78 @@ class DB:
 
     def pending_count(self, agent_id: str) -> int:
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM inbox WHERE agent_id=? AND delivered_at IS NULL", (agent_id,)
+            "SELECT COUNT(*) FROM inbox WHERE agent_id=? AND delivered_at IS NULL "
+            "AND COALESCE(held,0)=0", (agent_id,)
         ).fetchone()
         return int(row[0])
+
+    # Pull mode: messages held for the agent to read with read_messages.
+
+    def enqueue_held(self, agent_id: str, body: str, sender_id: str | None) -> int:
+        with self.tx() as c:
+            cur = c.execute(
+                "INSERT INTO inbox (agent_id, sender_id, body, created_at, held) VALUES (?,?,?,?,1)",
+                (agent_id, sender_id, body, time.time()),
+            )
+            return int(cur.lastrowid)
+
+    def unread(self, agent_id: str) -> list[Message]:
+        rows = self.conn.execute(
+            "SELECT * FROM inbox WHERE agent_id=? AND held=1 AND delivered_at IS NULL ORDER BY id",
+            (agent_id,),
+        )
+        return [_load(Message, r) for r in rows]
+
+    def unread_count(self, agent_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM inbox WHERE agent_id=? AND held=1 AND delivered_at IS NULL",
+            (agent_id,),
+        ).fetchone()
+        return int(row[0])
+
+    NOTICE_TTL = 120.0  # seconds a notice counts as outstanding before another may go
+
+    def claim_notice(self, agent_id: str) -> list[Message] | None:
+        """The unread messages a new notice should cover, marking them noticed;
+        None when there are none, or a notice went out within ``NOTICE_TTL``
+        (one covers everything unread, so a later message adds no second one;
+        after that a lost notice is sent again)."""
+        with self.tx() as c:
+            rows = c.execute(
+                "SELECT * FROM inbox WHERE agent_id=? AND held=1 AND delivered_at IS NULL ORDER BY id",
+                (agent_id,),
+            ).fetchall()
+            if not rows:
+                return None
+            last = max((r["noticed_at"] or 0.0) for r in rows)
+            if last and time.time() - last < self.NOTICE_TTL:
+                return None
+            c.execute(
+                "UPDATE inbox SET noticed_at=? WHERE agent_id=? AND held=1 AND delivered_at IS NULL",
+                (time.time(), agent_id),
+            )
+            return [_load(Message, r) for r in rows]
+
+    def reset_notice(self, agent_id: str) -> None:
+        """A notice that couldn't go out: let the next one try again."""
+        with self.tx() as c:
+            c.execute(
+                "UPDATE inbox SET noticed_at=NULL WHERE agent_id=? AND held=1 AND delivered_at IS NULL",
+                (agent_id,),
+            )
+
+    def read_held(self, agent_id: str) -> list[Message]:
+        """Every unread held message, marked read."""
+        with self.tx() as c:
+            rows = c.execute(
+                "SELECT * FROM inbox WHERE agent_id=? AND held=1 AND delivered_at IS NULL ORDER BY id",
+                (agent_id,),
+            ).fetchall()
+            c.execute(
+                "UPDATE inbox SET delivered_at=? WHERE agent_id=? AND held=1 AND delivered_at IS NULL",
+                (time.time(), agent_id),
+            )
+            return [_load(Message, r) for r in rows]
 
     def message_delivered(self, message_id: int) -> bool:
         """Whether the specific message ``enqueue`` returned has since been

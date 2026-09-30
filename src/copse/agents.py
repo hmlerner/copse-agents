@@ -982,10 +982,58 @@ def message_lead(db: DB, agent: Agent, sender_id: str | None) -> str | None:
     return f"copse delivered this message from {who}:"
 
 
-def send_message(db: DB, to_id: str, body: str, sender_id: str | None = None) -> str:
+def pulls_messages(db: DB, agent: Agent) -> bool:
+    """Whether messages from agents and copse to ``agent`` wait to be read with
+    read_messages (``message_delivery`` "pull", the default) instead of being
+    delivered. Only an interactive, hook-capable supervisor reads them."""
+    from copse.config import load_repo_config
+
+    if agent.mode != "interactive" or agent.headless or not get_provider(agent.provider).uses_hooks:
+        return False
+    ws = db.get_workspace(agent.workspace_id)
+    return (load_repo_config(ws.repo_root).message_delivery if ws else "pull") != "push"
+
+
+def unread_notice(db: DB, messages: list) -> str:
+    senders = list(dict.fromkeys(m.sender_id or "copse" for m in messages))
+    n = len(messages)
+    return (f"copse: {n} new message{'s' if n != 1 else ''} (from {', '.join(senders)}). "
+            "Call read_messages.")
+
+
+def render_unread(db: DB, messages: list) -> str:
+    """What read_messages returns: each message with its trust lead line."""
+    parts = []
+    for m in messages:
+        if m.sender_id:
+            parts.append(m.body)  # stored through format_message: sender and reply hint
+        else:
+            parts.append(f"[Message from copse]\n\n{m.body}")
+    return "\n\n---\n\n".join(parts)
+
+
+def send_message(db: DB, to_id: str, body: str, sender_id: str | None = None,
+                 person: bool = False) -> str:
     """Deliver now if the agent is idle; otherwise queue until it is.
-    Returns ``"delivered"`` or ``"queued"``."""
+    Returns ``"delivered"`` or ``"queued"``. ``person`` marks a message from
+    the person running copse, which is always pushed."""
     agent = get(db, to_id)
+    if not person and runs_process(agent) and is_alive(agent) and pulls_messages(db, agent):
+        # Keep the message unread and deliver only a notice, once for everything unread.
+        db.enqueue_held(agent.id, format_message(db, body, sender_id), sender_id)
+        claimed = db.claim_notice(agent.id)
+        if claimed is None:
+            return "queued"
+        try:
+            outcome = _send_message(db, agent, unread_notice(db, claimed), None)
+        except BaseException:
+            db.reset_notice(agent.id)
+            raise
+        return outcome
+    return _send_message(db, agent, body, sender_id)
+
+
+def _send_message(db: DB, agent: Agent, body: str, sender_id: str | None) -> str:
     if not runs_process(agent):
         raise AgentError(
             f"agent {agent.id} is a subagent run by its supervisor's own Agent tool, so copse "
@@ -1739,6 +1787,18 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
         if msg:
             db.set_status(agent_id, "processing")
             return {"decision": "block", "reason": msg.body}
+        if agent.mode == "interactive" and db.unread_count(agent_id):
+            ap = db.get_autopilot(agent_id)
+            if ap is not None and ap.enabled and not payload.get("stop_hook_active"):
+                # An autopilot supervisor doesn't stop with mail it hasn't read.
+                db.set_status(agent_id, "processing")
+                return {"decision": "block", "reason": (
+                    "[copse autopilot] You have unread messages. Call read_messages "
+                    "before you stop.")}
+            claimed = None if payload.get("stop_hook_active") else db.claim_notice(agent_id)
+            if claimed:  # the notice never went out (or was lost): hand it over now
+                db.set_status(agent_id, "processing")
+                return {"decision": "block", "reason": unread_notice(db, claimed)}
         needs_report = agent.mode in REPORTING_MODES and agent.result is None
         if needs_report and not payload.get("stop_hook_active"):
             db.set_status(agent_id, "processing")
