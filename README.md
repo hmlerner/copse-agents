@@ -519,7 +519,7 @@ add_dirs: /srv/extra
 ---
 ```
 
-Both are passed as `--add-dir`, once per entry. Three things to know:
+Both are passed as `--add-dir`, once per entry. Four things to know:
 
 - **It is full tool access, not read access.** Claude Code's own help says
   "directories to allow tool access to": edits and Bash reach them too, so a worker
@@ -528,9 +528,14 @@ Both are passed as `--add-dir`, once per entry. Three things to know:
 - **`CLAUDE.md` in those directories is loaded**, which is worth knowing before you
   add a directory that has one.
 - **Relative entries resolve against the repo root**, not the worktree the agent
-  runs in, and copse says so on stderr when a named directory does not exist —
-  Claude Code ignores a missing `--add-dir` silently, which would be the failure this
-  field exists to prevent.
+  runs in, and a leading `~` means your home directory. That holds in a profile in
+  `~/.copse/agents` too, so `~/refs` there is the same directory in every repo,
+  while a relative entry there resolves against whichever repo the agent runs in.
+- **A directory that does not exist is reported**, because Claude Code ignores a
+  missing `--add-dir` silently, which would be the failure this field exists to
+  prevent. `copse doctor` checks the list; a launch from the terminal says so on
+  stderr; `handoff`, `assign` and a queued task's start put it in what they tell
+  the supervisor.
 
 ### Subagent workers
 

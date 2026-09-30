@@ -222,3 +222,12 @@ def test_doctor_reports_what_is_missing(repo, monkeypatch):
     assert by_name["checks"].level == doctor.WARN
     text = doctor.render(results)
     assert "will stop copse from working" in text
+
+
+def test_doctor_reports_a_missing_add_dir(repo):
+    (repo / ".copse").mkdir(exist_ok=True)
+    (repo / ".copse" / "config.json").write_text('{"add_dirs": ["/no/such/cache", "."]}')
+    by_name = {c.name: c for c in doctor.checks(str(repo))}
+    assert by_name["add_dirs"].level == doctor.WARN
+    assert "/no/such/cache" in by_name["add_dirs"].detail
+    assert str(repo) not in by_name["add_dirs"].detail

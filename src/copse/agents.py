@@ -528,6 +528,21 @@ def sidebar_follow(db: DB, session: str) -> None:
                        _sidebar_position(root_ws) if root_ws else "left")
 
 
+def _add_dirs_warning(profile, provider_name: str) -> str | None:
+    missing = missing_add_dirs(profile) if provider_name == "claude" else []
+    if not missing:
+        return None
+    return (f"add_dirs names {', '.join(missing)}, which do not exist; "
+            "Claude Code will ignore them")
+
+
+def add_dirs_warning(agent: Agent, ws: Workspace) -> str | None:
+    """A warning if ``agent`` was launched with ``add_dirs`` that do not exist,
+    or None. Claude Code ignores those silently, so whoever started the agent
+    has to be told: the supervisor, whose only view of a launch is the reply."""
+    return _add_dirs_warning(load_profile(agent.profile, ws.repo_root), agent.provider)
+
+
 def _launch(db: DB, agent: Agent, ws: Workspace, *, prompt: str | None,
             resume: str | None, watch_pane: bool, background_setup: bool = False) -> None:
     """Start (or restart) ``agent``'s CLI in a new tmux window of ``ws``."""
@@ -540,11 +555,13 @@ def _launch(db: DB, agent: Agent, ws: Workspace, *, prompt: str | None,
         agent.status = status
         return
     # Here rather than in spawn, so a resume checks too: a directory can be
-    # deleted between the first launch and a `copse continue`.
-    missing = missing_add_dirs(profile) if provider.name == "claude" else []
-    if missing:
-        print(f"copse: add_dirs names {', '.join(missing)}, which do not exist; "
-              "Claude Code will ignore them", file=sys.stderr)
+    # deleted between the first launch and a `copse continue`. This reaches a
+    # person running copse in a terminal; a launch from the MCP server has no
+    # one reading its stderr, so handoff, assign and a queued task's start put
+    # the same text in what they tell the supervisor (add_dirs_warning).
+    warning = _add_dirs_warning(profile, provider.name)
+    if warning:
+        print(f"copse: {warning}", file=sys.stderr)
     if agent.headless:
         _launch_headless(db, agent, ws, prompt=prompt, resume=resume, watch_pane=watch_pane)
         return
