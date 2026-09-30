@@ -645,6 +645,25 @@ def learning(
     typer.echo(p.report(reset=reset))
 
 
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def account(ctx: typer.Context) -> None:
+    """copse Pro: your account (passed through to the installed account plugin)."""
+    from copse import account as account_mod
+    from copse.config import load_repo_config
+
+    try:
+        repo_root = git.main_repo_root(os.getcwd())
+    except git.GitError:
+        repo_root = os.getcwd()
+    try:
+        cfg = load_repo_config(repo_root)
+    except ValueError:
+        from copse.config import RepoConfig
+
+        cfg = RepoConfig()
+    raise typer.Exit(account_mod.run(cfg, repo_root, list(ctx.args), echo=typer.echo))
+
+
 @app.command()
 def watch(
     all_repos: bool = typer.Option(False, "--all", help="Every repo, not just this one."),

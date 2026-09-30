@@ -6,9 +6,10 @@ removed unmerged) to a plugin, and asks the plugin to pick a profile when
 ``assign``/``handoff`` get none and no milestone names one.
 
 A plugin is a Python package that registers an entry point in the
-``copse.learning`` group. The entry point's name is what the repo config's
-``learning`` key selects (``"learning": "<name>"``; the default ``"off"``
-loads nothing), and its object is a factory::
+``copse.learning`` group (loaded through ``copse.plugins``). The entry
+point's name is what the repo config's ``learning`` key selects
+(``"learning": "<name>"``; the default ``"off"`` loads nothing), and its
+object is a factory::
 
     def make(repo_root: str) -> LearningPlugin | None
 
@@ -25,14 +26,14 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from importlib.metadata import entry_points
 
+from copse import plugins
 from copse.config import RepoConfig
 from copse.db import DB, Agent, Workspace
 
 log = logging.getLogger(__name__)
 
-GROUP = "copse.learning"
+GROUP = plugins.LEARNING
 
 
 @dataclass(frozen=True)
@@ -79,31 +80,14 @@ class LearningPlugin(ABC):
         return "this learning plugin has nothing to report"
 
 
-_loaded: dict[tuple[str, str], LearningPlugin | None] = {}
-
-
 def plugin(cfg: RepoConfig, repo_root: str) -> LearningPlugin | None:
     """The plugin the repo's ``learning`` setting selects, or None when it's
     off or not installed."""
-    name = (cfg.learning or "off").strip()
-    if name == "off":
-        return None
-    key = (name, repo_root)
-    if key not in _loaded:
-        _loaded[key] = None
-        try:
-            ep = next((e for e in entry_points(group=GROUP) if e.name == name), None)
-            if ep is None:
-                log.warning("copse: no learning plugin named %r is installed", name)
-            else:
-                _loaded[key] = ep.load()(repo_root)
-        except Exception:
-            log.exception("copse: couldn't load the learning plugin %r", name)
-    return _loaded[key]
+    return plugins.select(GROUP, cfg, repo_root)  # type: ignore[return-value]
 
 
 def installed() -> list[str]:
-    return sorted(e.name for e in entry_points(group=GROUP))
+    return plugins.installed(GROUP)
 
 
 def _task_files(db: DB, worker: Agent, repo_root: str) -> tuple[tuple[str, ...], str | None]:

@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from copse import agents, autopilot, learning, mcp_server, quota, workspaces
+from copse import agents, autopilot, learning, mcp_server, plugins, quota, workspaces
 from copse.config import DEFAULT_ROUTING, load_repo_config
 from copse.db import Agent
 
@@ -26,9 +26,9 @@ class Picker(learning.LearningPlugin):
 
 @pytest.fixture(autouse=True)
 def clear_cache():
-    learning._loaded.clear()
+    plugins.reset()
     yield
-    learning._loaded.clear()
+    plugins.reset()
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def install(monkeypatch, plugin):
         def load(self):
             return lambda repo_root: plugin
 
-    monkeypatch.setattr(learning, "entry_points", lambda group: [EP()] if group == learning.GROUP else [])
+    monkeypatch.setattr(plugins, "entry_points", lambda group: [EP()] if group == learning.GROUP else [])
 
 
 def test_defaults(repo):

@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from copse import autopilot, learning, workspaces
+from copse import autopilot, learning, plugins, workspaces
 from copse.config import RepoConfig
 from copse.db import Agent
 
@@ -33,9 +33,9 @@ def ws(db, repo):
 
 @pytest.fixture(autouse=True)
 def clear_cache():
-    learning._loaded.clear()
+    plugins.reset()
     yield
-    learning._loaded.clear()
+    plugins.reset()
 
 
 def install(monkeypatch, plugin, name="test"):
@@ -46,7 +46,7 @@ def install(monkeypatch, plugin, name="test"):
         def load(self):
             return lambda repo_root: plugin
 
-    monkeypatch.setattr(learning, "entry_points", lambda group: [EP()] if group == learning.GROUP else [])
+    monkeypatch.setattr(plugins, "entry_points", lambda group: [EP()] if group == learning.GROUP else [])
 
 
 def worker(db, ws, task="fix the crash in parser.py"):
@@ -86,7 +86,7 @@ def test_suggestion_must_be_a_candidate(db, ws, monkeypatch):
     cfg = RepoConfig(learning="test", learning_candidates=["developer", "developer-local"])
     install(monkeypatch, Recorder(pick="developer-local"))
     assert learning.choose(db, cfg, ws.repo_root, "add docs", ["README.md"]) == "developer-local"
-    learning._loaded.clear()
+    plugins.reset()
     install(monkeypatch, Recorder(pick="something-else"))
     assert learning.choose(db, cfg, ws.repo_root, "add docs") is None
 
