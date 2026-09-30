@@ -83,7 +83,7 @@ def test_claude_command_installs_the_hook_for_bash_only():
     argv = ClaudeCode().command(LaunchContext("abc", load_profile("developer"), "go"))
     settings = json.loads(argv[argv.index("--settings") + 1])
     (entry,) = settings["hooks"]["PreToolUse"]
-    assert entry["matcher"] == "Bash"
+    assert entry["matcher"] == "Bash|Edit|Write|NotebookEdit"
     assert "_hook pre-tool --agent abc" in entry["hooks"][0]["command"]
 
 

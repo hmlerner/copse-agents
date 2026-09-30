@@ -163,6 +163,7 @@ async def handoff(
     agent_profile: str = "", task: str = "", isolate: bool = True, branch: str | None = None,
     wait_seconds: int = DEFAULT_WAIT_SECONDS, done_when: str | None = None,
     files: list[str] | None = None, depends_on: list[str] | None = None,
+    plan_first: bool | None = None,
 ) -> str:
     """Give a task to a new worker agent and wait for its result.
 
@@ -191,6 +192,10 @@ async def handoff(
     aren't yet, this task is queued instead of starting, and started
     automatically (cut from your branch as it stands then) once
     merge_workspace resolves them. list_tasks shows what's queued.
+
+    plan_first: the worker must first send a plan with submit_plan and wait
+    for your approve_plan before it may edit files (default: the repo's
+    `plan_first` config). Use it for large or risky tasks.
     """
     def run() -> str:
         db = DB()
@@ -208,7 +213,7 @@ async def handoff(
         if unmet:
             t = tasks.enqueue(
                 db, caller, ws, profile, task,"handoff", isolate=isolate, branch=branch,
-                done_when=done_when, files=files, depends_on=depends_on,
+                done_when=done_when, files=files, depends_on=depends_on, plan_first=plan_first,
             )
             return f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
         warning = tasks.overlap_warning(db, ws, files)
@@ -218,7 +223,7 @@ async def handoff(
                     "depends_on so it starts once that branch has merged.")
         worker, wws = agents.delegate(
             db, caller, ws, profile, task,"handoff", isolate=isolate, branch=branch,
-            done_when=done_when,
+            done_when=done_when, plan_first=plan_first,
         )
         tasks.record_started(
             db, ws, worker, profile, task,"handoff", isolate=isolate, branch=branch,
@@ -251,7 +256,7 @@ async def wait_for_worker(agent_id: str, wait_seconds: int = DEFAULT_WAIT_SECOND
 async def assign(
     agent_profile: str = "", task: str = "", isolate: bool = True, branch: str | None = None,
     done_when: str | None = None, files: list[str] | None = None,
-    depends_on: list[str] | None = None,
+    depends_on: list[str] | None = None, plan_first: bool | None = None,
 ) -> str:
     """Start a worker agent on a task and return immediately.
 
@@ -271,6 +276,10 @@ async def assign(
     aren't yet, this task is queued instead of starting, and started
     automatically (cut from your branch as it stands then) once
     merge_workspace resolves them. list_tasks shows what's queued.
+
+    plan_first: the worker must first send a plan with submit_plan and wait
+    for your approve_plan before it may edit files (default: the repo's
+    `plan_first` config). Use it for large or risky tasks.
     """
     def run() -> str:
         db = DB()
@@ -288,7 +297,7 @@ async def assign(
         if unmet:
             t = tasks.enqueue(
                 db, caller, ws, profile, task,"assign", isolate=isolate, branch=branch,
-                done_when=done_when, files=files, depends_on=depends_on,
+                done_when=done_when, files=files, depends_on=depends_on, plan_first=plan_first,
             )
             return f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
         warning = tasks.overlap_warning(db, ws, files)
@@ -298,7 +307,7 @@ async def assign(
                     "depends_on so it starts once that branch has merged.")
         worker, wws = agents.delegate(
             db, caller, ws, profile, task,"assign", isolate=isolate, branch=branch,
-            done_when=done_when,
+            done_when=done_when, plan_first=plan_first,
         )
         tasks.record_started(
             db, ws, worker, profile, task,"assign", isolate=isolate, branch=branch,
@@ -324,6 +333,35 @@ def send_message(to_agent_id: str, message: str) -> str:
     db = DB()
     caller, _ = _caller(db)
     return agents.send_message(db, to_agent_id, message, caller.id if caller else None)
+
+
+@mcp.tool()
+def submit_plan(plan: str) -> str:
+    """Plan-first workers: call this with a short plan (files to change, how,
+    and how you'll test) before editing anything, then stop and wait for your
+    supervisor's decision, which arrives as a message."""
+    db = DB()
+    caller, _ = _caller(db)
+    if not caller:
+        return "Not running as a copse agent; nothing to send the plan to."
+    try:
+        return agents.submit_plan(db, caller.id, plan)
+    except agents.AgentError as e:
+        return str(e)
+
+
+@mcp.tool()
+def approve_plan(agent_id: str, feedback: str = "", approved: bool = True) -> str:
+    """Decide on the plan a plan-first worker proposed with submit_plan. With
+    approved=false (or feedback) the worker revises it and submits again; the
+    worker is sent your decision and feedback. Only the worker's supervisor
+    may decide."""
+    db = DB()
+    caller, _ = _caller(db)
+    try:
+        return agents.approve_plan(db, caller.id if caller else None, agent_id, feedback, approved)
+    except agents.AgentError as e:
+        return str(e)
 
 
 @mcp.tool()

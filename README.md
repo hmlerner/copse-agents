@@ -169,6 +169,14 @@ or put the goal in `.copse/goals.md`, and it works like a project manager:
    merge first): a task with unmet dependencies is queued instead of started,
    and starts automatically, cut from the updated base, once
    `merge_workspace` resolves them. `list_tasks` shows what's queued.
+   `assign`/`handoff` also take `plan_first` (default: the `plan_first` config
+   key): the worker reads the code, then calls `submit_plan` with a short plan
+   and waits. The plan reaches the supervisor as a message; `approve_plan`
+   approves it, or (`approved=false`, with feedback) sends it back for a
+   revision. For Claude workers copse's PreToolUse hook refuses Edit, Write
+   and NotebookEdit until the plan is approved; other CLIs are only told to
+   wait. Autopilot doesn't count a worker waiting on approval as stalled, and
+   reminds the supervisor about plans awaiting a decision.
 3. **Gated merges.** A branch merges only when everything is committed, a
    reviewer agent has approved that exact commit, your pre-commit hooks pass,
    and your `checks` pass. copse runs these itself before `merge_workspace`,
@@ -258,6 +266,8 @@ knowing them helps when you tell the supervisor how to work.
 | `request_review` / `submit_review` | supervisor / reviewer | start a reviewer on a branch / record its verdict |
 | `merge_workspace` / `remove_workspace` | supervisor | merge through the gates / delete the worktree |
 | `report_result` | worker | finish a task and hand back the result |
+| `submit_plan` | worker | a `plan_first` worker proposes its plan and waits for approval before editing |
+| `approve_plan` | supervisor | approve a worker's plan, or send it back with feedback (`approved=false`) |
 | `complete_subagent` | supervisor | record the result of a `subagent`-profile task |
 | `set_goal` / `get_progress` / `check_milestone` | supervisor | autopilot's goal, its progress, and running the checks |
 | `need_user` | supervisor | stop autopilot and ask you a question |
@@ -325,6 +335,7 @@ Autopilot, merge gates and cleanup:
 | `review_rounds` | `2` | fix-and-re-review rounds the pipeline runs before handing findings to the supervisor |
 | `merge_into` | none | branch that worker branches are cut from and merge into, whatever branch the supervisor is on |
 | `auto_merge_default_branch` | `false` | let the pipeline merge into the repo's default branch (origin HEAD, else `main`/`master`) on its own; by default it sends a "needs you" message instead, and you run `merge_workspace` yourself (manual merges are never gated) |
+| `plan_first` | `false` | workers propose a plan (`submit_plan`) and wait for `approve_plan` before editing |
 | `overlap` | `"block"` | a task whose `files` overlap a running task's is refused (`"warn"` starts it with a warning) |
 | `pool_size` | `1` if `setup` is set, else `0` | pre-built worktrees (checked out, files copied, setup run) kept ready so a new worker doesn't wait on `setup`; `0` disables it |
 | `add_dirs` | `[]` | directories outside the worktree that Claude Code agents may use (`--add-dir`; full tool access, see "Directories outside the workspace") |

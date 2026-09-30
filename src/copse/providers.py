@@ -255,8 +255,9 @@ class ClaudeCode(Provider):
                 # allowed_tools is approved here, so `cd sub && pytest`
                 # doesn't prompt (Claude Code's own rules match a compound
                 # command only as a whole). Anything else is left to Claude
-                # Code's permission system; copse never denies.
-                "PreToolUse": [{"matcher": "Bash", **self._hook("pre-tool", ctx.agent_id)[0]}],
+                # Code's permission system. The one thing copse denies is a
+                # file edit by a plan_first worker whose plan isn't approved.
+                "PreToolUse": [{"matcher": "Bash|Edit|Write|NotebookEdit", **self._hook("pre-tool", ctx.agent_id)[0]}],
             },
             # Claude Code only tells status lines how much of the plan's usage
             # is spent. copse's records that, then runs the person's own

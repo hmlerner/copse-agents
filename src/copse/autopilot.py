@@ -442,7 +442,7 @@ def split_workers(db: DB, root_id: str, *, screen: bool = False) -> tuple[list[A
     now = time.time()
     working, stalled = [], []
     for a in active_workers(db, root_id):
-        maybe = (a.result is None and a.status == "idle"
+        maybe = (a.result is None and a.status == "idle" and a.plan_state != "proposed"
                  and get_provider(a.provider).uses_hooks
                  and now - (a.status_since or a.created_at) >= IDLE_GRACE_SECONDS)
         if maybe and (not screen or a.headless or agents.screen_status(db, a, samples=2) == "idle"):
@@ -550,7 +550,10 @@ def on_stop(db: DB, agent: Agent, payload: dict) -> dict | None:
     if checking(ap):
         return None  # the check's result arrives as a message and wakes it up
     working, stalled = split_workers(db, agent.id, screen=True)
-    if any(agents.runs_process(a) for a in working):
+    # A worker waiting on plan approval waits on the supervisor, so the supervisor
+    # can't stop for it (see nudge).
+    if any(agents.runs_process(a) for a in working
+            if getattr(a, "plan_state", None) != "proposed"):
         return None  # their results arrive as messages and wake it up
     ws = db.get_workspace(agent.workspace_id)
     cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
@@ -577,6 +580,11 @@ def nudge(db: DB, ap: Autopilot, cfg: RepoConfig,
     if open_subagents:
         pending = ("Subagent work not yet recorded: when each of your subagents finishes, call "
                    f"complete_subagent for {', '.join(open_subagents)}.\n\n")
+    planning = [a.id for a in working if getattr(a, "plan_state", None) == "proposed"]
+    if planning:
+        pending += (f"Plans awaiting your approval: {', '.join(planning)}. Read each plan "
+                    "(it arrived as a message) and call approve_plan, with feedback and "
+                    "approved=false to ask for changes; the worker is waiting on you.\n\n")
     stuck = ""
     if stalled:
         names = ", ".join(a.id for a in stalled)
