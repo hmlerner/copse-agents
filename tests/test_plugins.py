@@ -361,10 +361,24 @@ def test_policy_deny_blocks_the_pipelines_own_merge(db, piped, monkeypatch):
     assert Path(ws.path).is_dir()
 
 
-def test_a_broken_policy_plugin_allows(db, repo, boss, monkeypatch):
+def test_a_broken_policy_plugin_refuses(db, repo, boss, monkeypatch):
     install_one(monkeypatch, plugins.POLICY, Gate(fail=True))
     monkeypatch.setattr(agents, "spawn", fake_spawn)
-    assert "Started worker" in asyncio.run(mcp_server.assign(task="do A", branch="feat-a"))
+    out = asyncio.run(mcp_server.assign(task="do A", branch="feat-a"))
+    assert "Not started" in out and "failed" in out, out
+
+
+def test_a_configured_policy_that_wont_load_refuses(repo, monkeypatch):
+    from copse import policy
+    from copse.config import RepoConfig
+
+    install(monkeypatch, {})
+    cfg = RepoConfig()
+    cfg.plugins["policy"] = "pro"
+    d = policy.check_assign(cfg, str(repo), "dev", "do A", "assign")
+    assert not d.allowed and "'pro'" in d.reason
+    cfg.plugins["policy"] = "off"
+    assert policy.check_assign(cfg, str(repo), "dev", "do A", "assign").allowed
 
 
 # -- copse account ----------------------------------------------------------------------

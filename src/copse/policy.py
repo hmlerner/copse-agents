@@ -9,8 +9,10 @@ what the caller sees ("Not started: ..." / "Not merged: ...").
 A plugin is a package registering an entry point in the ``copse.policy``
 group whose object is a factory ``make(repo_root) -> PolicyPlugin | None``;
 see ``copse.plugins`` for how one is selected. Without a plugin everything
-is allowed, and so is anything a plugin fails to decide (an exception is
-logged and treated as allow).
+is allowed. A policy fails closed: once a plugin is in play, an exception,
+an unreadable answer, or a plugin the repo config names that can't be loaded
+refuses the delegation or merge, since a policy that errors open (skipping a
+required human review, say) is worse than one that blocks.
 """
 
 from __future__ import annotations
@@ -90,17 +92,28 @@ def plugin(cfg: RepoConfig, repo_root: str) -> PolicyPlugin | None:
 
 
 def _decide(what: str, cfg: RepoConfig, repo_root: str, ask) -> Decision:
+    configured = cfg.plugins.get(plugins.short(GROUP)) if isinstance(cfg.plugins, dict) else None
+    configured = configured.strip() if isinstance(configured, str) else ""
     try:
         p = plugin(cfg, repo_root)
-        if p is None:
-            return allow()
-        d = ask(p)
-        if isinstance(d, Decision):
-            return d
-        return allow() if d in (None, True) else deny(str(d) if d is not False else "")
     except Exception:
-        log.exception("copse: the policy plugin failed to check a %s; allowing it", what)
+        log.exception("copse: couldn't load the policy plugin")
+        p = None
+    if p is None:
+        if configured and configured != plugins.OFF:
+            return deny(f"the policy plugin {configured!r} named in .copse/config.json "
+                        "couldn't be loaded")
         return allow()
+    try:
+        d = ask(p)
+    except Exception:
+        log.exception("copse: the policy plugin failed to check a %s; refusing it", what)
+        return deny(f"the policy plugin failed while checking this {what}")
+    if isinstance(d, Decision):
+        return d
+    if d is True:
+        return allow()
+    return deny(d if isinstance(d, str) else f"the policy plugin gave no decision on this {what}")
 
 
 def _profile_fields(profile: str | None, repo_root: str) -> tuple[str | None, str | None]:
