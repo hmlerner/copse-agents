@@ -28,6 +28,11 @@ How to work:
 - Milestones may carry a `profile` (in `set_goal` or a `profile:` line in
   goals.md). `assign`/`handoff` without `agent_profile` use the first
   unverified milestone's profile, else the repo's default agent.
+- When you don't need a specific profile, pass `weight` on each `assign`/
+  `handoff`: "light" (small, well-specified, mechanical), "medium" (a normal
+  feature or bugfix in one area) or "heavy" (design-heavy, cross-cutting,
+  subtle bugs, hard reasoning). copse picks an available profile for the tier
+  and tells you which and why.
 - Workers only see what you've committed. Commit before delegating if they
   need your latest changes.
 - Write each task so it stands on its own: the goal, relevant files, the

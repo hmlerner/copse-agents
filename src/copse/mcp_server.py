@@ -163,12 +163,19 @@ async def handoff(
     agent_profile: str = "", task: str = "", isolate: bool = True, branch: str | None = None,
     wait_seconds: int = DEFAULT_WAIT_SECONDS, done_when: str | None = None,
     files: list[str] | None = None, depends_on: list[str] | None = None,
-    plan_first: bool | None = None,
+    plan_first: bool | None = None, weight: str | None = None,
 ) -> str:
     """Give a task to a new worker agent and wait for its result.
 
     agent_profile is optional: when empty, the current unverified milestone's
-    profile is used, else the repo's default agent.
+    profile is used, else `weight` routes to an available profile, else the
+    repo's default agent.
+
+    weight: "light", "medium" or "heavy" (when you don't need a specific
+    profile): copse picks an available profile for the tier and the reply says
+    which and why. light = small, well-specified, mechanical (docs, renames,
+    simple tests); medium = a normal feature or bugfix in one area; heavy =
+    design-heavy, cross-cutting, subtle bugs, hard reasoning.
 
     Waits up to wait_seconds (default 4 minutes). If the worker isn't done by
     then, this returns "still running": call wait_for_worker to keep waiting,
@@ -202,8 +209,10 @@ async def handoff(
         caller, ws = _caller(db)
         if not task.strip():
             return "Give the worker a task."
+        why: list[str] = []
         try:
-            profile = autopilot.resolve_profile(db, caller.id, ws.repo_root, agent_profile, task, files)
+            profile, _ = autopilot.choose_profile(
+                db, caller.id, ws.repo_root, agent_profile, task, files, weight, why)
         except autopilot.AutopilotError as e:
             return str(e)
         try:
@@ -214,8 +223,10 @@ async def handoff(
             t = tasks.enqueue(
                 db, caller, ws, profile, task,"handoff", isolate=isolate, branch=branch,
                 done_when=done_when, files=files, depends_on=depends_on, plan_first=plan_first,
+                weight=weight,
             )
-            return f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
+            return (f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
+                    + "".join(f"\nprofile: {w}" for w in why))
         warning = tasks.overlap_warning(db, ws, files)
         if warning and load_repo_config(ws.repo_root).overlap == "block":
             return (f"Not started: this task {warning}. Two workers editing the same files "
@@ -227,12 +238,14 @@ async def handoff(
         )
         tasks.record_started(
             db, ws, worker, profile, task,"handoff", isolate=isolate, branch=branch,
-            done_when=done_when, files=files, depends_on=depends_on,
+            done_when=done_when, files=files, depends_on=depends_on, weight=weight,
         )
         if not agents.runs_process(worker):
             return agents.subagent_brief(worker, wws)
         missing = agents.add_dirs_warning(worker, wws)
         result = _await_worker(db, worker.id, wait_seconds)
+        for w in why:
+            result += f"\n\nProfile: {w}"
         for w in (warning, missing):
             if w:
                 result += f"\n\nWarning: {w}"
@@ -257,11 +270,19 @@ async def assign(
     agent_profile: str = "", task: str = "", isolate: bool = True, branch: str | None = None,
     done_when: str | None = None, files: list[str] | None = None,
     depends_on: list[str] | None = None, plan_first: bool | None = None,
+    weight: str | None = None,
 ) -> str:
     """Start a worker agent on a task and return immediately.
 
     agent_profile is optional: when empty, the current unverified milestone's
-    profile is used, else the repo's default agent.
+    profile is used, else `weight` routes to an available profile, else the
+    repo's default agent.
+
+    weight: "light", "medium" or "heavy" (when you don't need a specific
+    profile): copse picks an available profile for the tier and the reply says
+    which and why. light = small, well-specified, mechanical (docs, renames,
+    simple tests); medium = a normal feature or bugfix in one area; heavy =
+    design-heavy, cross-cutting, subtle bugs, hard reasoning.
 
     When it finishes, its result arrives in your conversation as a message.
     Isolation works as for handoff. Use this to run several workers in parallel.
@@ -286,9 +307,10 @@ async def assign(
         caller, ws = _caller(db)
         if not task.strip():
             return "Give the worker a task."
+        why: list[str] = []
         try:
             profile, learned = autopilot.choose_profile(
-                db, caller.id, ws.repo_root, agent_profile, task, files)
+                db, caller.id, ws.repo_root, agent_profile, task, files, weight, why)
         except autopilot.AutopilotError as e:
             return str(e)
         try:
@@ -299,8 +321,10 @@ async def assign(
             t = tasks.enqueue(
                 db, caller, ws, profile, task,"assign", isolate=isolate, branch=branch,
                 done_when=done_when, files=files, depends_on=depends_on, plan_first=plan_first,
+                weight=weight,
             )
-            return f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
+            return (f"Queued task {t.id} until {', '.join(unmet)} merge{'s' if len(unmet) == 1 else ''}."
+                    + "".join(f"\nprofile: {w}" for w in why))
         warning = tasks.overlap_warning(db, ws, files)
         if warning and load_repo_config(ws.repo_root).overlap == "block":
             return (f"Not started: this task {warning}. Two workers editing the same files "
@@ -312,12 +336,14 @@ async def assign(
         )
         tasks.record_started(
             db, ws, worker, profile, task,"assign", isolate=isolate, branch=branch,
-            done_when=done_when, files=files, depends_on=depends_on,
+            done_when=done_when, files=files, depends_on=depends_on, weight=weight,
         )
         if not agents.runs_process(worker):
             return agents.subagent_brief(worker, wws)
         text = f"Started worker {worker.id} ({worker.profile}) in workspace {wws.id} on branch {wws.branch}."
-        if learned:
+        for w in why:
+            text += f"\nprofile: {w}"
+        if learned and not why:
             text += f"\nprofile chosen by learning: {profile}"
         for w in (warning, agents.add_dirs_warning(worker, wws)):
             if w:
