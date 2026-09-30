@@ -37,6 +37,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from copse.config import CONFIG_DIR, RepoConfig, config_root, load_repo_config
 from copse.db import DB, Agent, Autopilot, Milestone, Workspace
