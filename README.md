@@ -169,6 +169,14 @@ or put the goal in `.copse/goals.md`, and it works like a project manager:
    merge first): a task with unmet dependencies is queued instead of started,
    and starts automatically, cut from the updated base, once
    `merge_workspace` resolves them. `list_tasks` shows what's queued.
+   `assign`/`handoff` also take `plan_first` (default: the `plan_first` config
+   key): the worker reads the code, then calls `submit_plan` with a short plan
+   and waits. The plan reaches the supervisor as a message; `approve_plan`
+   approves it, or (`approved=false`, with feedback) sends it back for a
+   revision. For Claude workers copse's PreToolUse hook refuses Edit, Write
+   and NotebookEdit until the plan is approved; other CLIs are only told to
+   wait. Autopilot doesn't count a worker waiting on approval as stalled, and
+   reminds the supervisor about plans awaiting a decision.
 3. **Gated merges.** A branch merges only when everything is committed, a
    reviewer agent has approved that exact commit, your pre-commit hooks pass,
    and your `checks` pass. copse runs these itself before `merge_workspace`,
@@ -235,6 +243,7 @@ your own status line prints, so what you see doesn't change.
 | `copse transfer [REPO] [--from SESSION] [-b BRANCH]` | move a scratch session's work into a real repo |
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
+| `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
 | `copse attach / cd / open [WS]` | tmux session / path / editor |
 | `copse status / diff [--stat] [WS]` | compared with the base branch (committed + uncommitted) |
@@ -265,6 +274,8 @@ knowing them helps when you tell the supervisor how to work.
 | `request_review` / `submit_review` | supervisor / reviewer | start a reviewer on a branch / record its verdict |
 | `merge_workspace` / `remove_workspace` | supervisor | merge through the gates / delete the worktree |
 | `report_result` | worker | finish a task and hand back the result |
+| `submit_plan` | worker | a `plan_first` worker proposes its plan and waits for approval before editing |
+| `approve_plan` | supervisor | approve a worker's plan, or send it back with feedback (`approved=false`) |
 | `complete_subagent` | supervisor | record the result of a `subagent`-profile task |
 | `set_goal` / `get_progress` / `check_milestone` | supervisor | autopilot's goal, its progress, and running the checks |
 | `need_user` | supervisor | stop autopilot and ask you a question |
@@ -332,11 +343,25 @@ Autopilot, merge gates and cleanup:
 | `review_rounds` | `2` | fix-and-re-review rounds the pipeline runs before handing findings to the supervisor |
 | `merge_into` | none | branch that worker branches are cut from and merge into, whatever branch the supervisor is on |
 | `auto_merge_default_branch` | `false` | let the pipeline merge into the repo's default branch (origin HEAD, else `main`/`master`) on its own; by default it sends a "needs you" message instead, and you run `merge_workspace` yourself (manual merges are never gated) |
+| `plan_first` | `false` | workers propose a plan (`submit_plan`) and wait for `approve_plan` before editing |
 | `overlap` | `"block"` | a task whose `files` overlap a running task's is refused (`"warn"` starts it with a warning) |
 | `pool_size` | `1` if `setup` is set, else `0` | pre-built worktrees (checked out, files copied, setup run) kept ready so a new worker doesn't wait on `setup`; `0` disables it |
 | `add_dirs` | `[]` | directories outside the worktree that Claude Code agents may use (`--add-dir`; full tool access, see "Directories outside the workspace") |
 | `local_models` | `true` | when a native profile points at Ollama on this machine and it isn't running, `copse` starts `ollama serve` in the background (with the context length the profiles need) and loads their models; `false` leaves it to you |
 | `sidebar` | `"left"` | where the dashboard sits in each window: `"left"` of the chat, or `"bottom"` (full-width rows under it) |
+| `learning` | `"off"` | the name of an installed learning plugin, which records how worker tasks turned out and suggests profiles (see below) |
+| `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
+
+**Learning plugins.** copse can hand what happens to each worker task (review
+verdicts, times the supervisor had to step in, merged or abandoned, tokens, time)
+to a learning plugin, and ask it to pick a profile from `learning_candidates` when
+`assign` gets none and no milestone names one; the reply then says
+`profile chosen by learning: X`. A profile named by you or by a milestone always
+wins. copse ships no plugin: a plugin is a package registering a `copse.learning`
+entry point (see `copse/learning.py` for the interface), installed with
+`uv tool install copse-agents --with <plugin>` and selected with
+`"learning": "<name>"`. A plugin that's missing or fails never breaks a review,
+merge or delegation.
 
 **Closing and cleaning up.** Press `x` on an agent in the sidebar (twice for one
 that's still running) or run `copse close <id>` to stop it and hide it. Stopping means

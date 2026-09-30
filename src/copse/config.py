@@ -62,6 +62,7 @@ class RepoConfig:
     review_rounds: int = 2             # fix-and-re-review rounds the pipeline runs before asking the supervisor
     merge_into: str | None = None      # branch worker branches are cut from and merge into (None: the supervisor's / default branch)
     auto_merge_default_branch: bool = False  # let the pipeline merge into the repo's default branch on its own
+    plan_first: bool = False           # workers propose a plan and wait for approval before editing
     overlap: str = "block"           # a task whose files overlap a running one: "block" or "warn"
     # Worktree pool: pre-built worktrees (checked out, files copied, setup run)
     # that `create` claims instead of doing that work live. None here means
@@ -74,6 +75,8 @@ class RepoConfig:
     # this machine and it isn't running (see copse.native.serve).
     local_models: bool = True
     sidebar: str = "left"              # where the dashboard sits: "left" of the chat or "bottom"
+    learning: str = "off"              # "off" or an installed learning plugin's name (see copse.learning)
+    learning_candidates: list[str] = field(default_factory=list)  # profiles the learner may pick from
 
 
 def _merge_commands(shared: list[str], local: object) -> list[str]:
@@ -126,7 +129,8 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
                 "reviewer", "review_profile", "pre_commit", "max_agents", "check_timeout",
                 "usage_limit", "pool_size", "graphify", "stale_after", "pipeline",
                 "review_rounds", "overlap", "local_models", "merge_into",
-                "auto_merge_default_branch", "sidebar"):
+                "auto_merge_default_branch", "sidebar", "plan_first", "learning",
+                "learning_candidates"):
         if key in local:
             setattr(cfg, key, local[key])
         elif key in shared:

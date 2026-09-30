@@ -195,7 +195,7 @@ def _cancel(db: DB, task_id: str, reason: str) -> None:
 def enqueue(
     db: DB, caller: Agent | None, caller_ws: Workspace, profile: str, task_text: str, mode: str,
     *, isolate: bool, branch: str | None, done_when: str | None,
-    files: list[str] | None, depends_on: list[str] | None,
+    files: list[str] | None, depends_on: list[str] | None, plan_first: bool | None = None,
 ) -> Task:
     """Record a task that can't start yet: no worker, no workspace, just what
     it takes to start it once its dependencies are merged."""
@@ -207,6 +207,8 @@ def enqueue(
         depends_on=_dumps(depends_on), state="pending", created_at=time.time(),
     )
     db.add_task(t)
+    if plan_first is not None:
+        db.update_task(t.id, plan_first=int(plan_first))
     return t
 
 
@@ -238,6 +240,7 @@ def start_queued(db: DB, task: Task) -> Agent:
     worker, _wws = agents.delegate(
         db, caller, caller_ws, task.profile, task.task_text, task.mode,
         isolate=bool(task.isolate), branch=task.branch, done_when=task.done_when,
+        plan_first=None if task.plan_first is None else bool(task.plan_first),
     )
     db.update_task(task.id, agent_id=worker.id, state="started", started_at=time.time())
     return worker

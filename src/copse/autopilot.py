@@ -210,14 +210,25 @@ def set_goal(db: DB, root_id: str, goal: str,
     db.bump_progress(root_id)
 
 
-def resolve_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None) -> str:
-    """The worker profile for a delegation: ``requested`` if given, else the
-    first unverified milestone's profile in the caller's session, else the
-    repo's ``default_agent``. Raises AutopilotError if it doesn't exist."""
+def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None,
+                   task: str | None = None, files: list[str] | None = None) -> tuple[str, bool]:
+    """The worker profile for a delegation, and whether learning chose it:
+    ``requested`` if given, else the first unverified milestone's profile in
+    the caller's session, else (with a learning plugin selected) the plugin's
+    pick for this task, else the repo's ``default_agent``. Raises
+    AutopilotError if it doesn't exist."""
     name = (requested or "").strip()
+    learned = False
     if not name:
         pending = next((m for m in db.milestones(root_of(db, caller_id)) if m.status != "passed"), None)
-        name = (pending.profile if pending else None) or load_repo_config(repo_root).default_agent
+        name = (pending.profile if pending else None) or ""
+    if not name:
+        from copse import learning
+
+        cfg = load_repo_config(repo_root)
+        name = learning.choose(db, cfg, repo_root, task, files) or ""
+        learned = bool(name)
+        name = name or cfg.default_agent
     try:
         load_profile(name, repo_root)
     except KeyError:
@@ -225,7 +236,13 @@ def resolve_profile(db: DB, caller_id: str, repo_root: str, requested: str | Non
             f"no agent profile named {name!r}; see list_agent_profiles, "
             "or pass agent_profile explicitly"
         ) from None
-    return name
+    return name, learned
+
+
+def resolve_profile(db: DB, caller_id: str, repo_root: str, requested: str | None = None,
+                    task: str | None = None, files: list[str] | None = None) -> str:
+    """``choose_profile`` without the learned flag."""
+    return choose_profile(db, caller_id, repo_root, requested, task, files)[0]
 
 
 def need_user(db: DB, root_id: str, question: str) -> None:
@@ -442,7 +459,7 @@ def split_workers(db: DB, root_id: str, *, screen: bool = False) -> tuple[list[A
     now = time.time()
     working, stalled = [], []
     for a in active_workers(db, root_id):
-        maybe = (a.result is None and a.status == "idle"
+        maybe = (a.result is None and a.status == "idle" and a.plan_state != "proposed"
                  and get_provider(a.provider).uses_hooks
                  and now - (a.status_since or a.created_at) >= IDLE_GRACE_SECONDS)
         if maybe and (not screen or a.headless or agents.screen_status(db, a, samples=2) == "idle"):
@@ -650,7 +667,10 @@ def on_stop(db: DB, agent: Agent, payload: dict) -> dict | None:
     if checking(ap):
         return None  # the check's result arrives as a message and wakes it up
     working, stalled = split_workers(db, agent.id, screen=True)
-    if any(agents.runs_process(a) for a in working):
+    # A worker waiting on plan approval waits on the supervisor, so the supervisor
+    # can't stop for it (see nudge).
+    if any(agents.runs_process(a) for a in working
+            if getattr(a, "plan_state", None) != "proposed"):
         return None  # their results arrive as messages and wake it up
     nudges = ap.nudges if ap.nudged_at == ap.progress else 0
     if nudges >= MAX_NUDGES:
@@ -671,6 +691,11 @@ def nudge(db: DB, ap: Autopilot, cfg: RepoConfig,
     if open_subagents:
         pending = ("Subagent work not yet recorded: when each of your subagents finishes, call "
                    f"complete_subagent for {', '.join(open_subagents)}.\n\n")
+    planning = [a.id for a in working if getattr(a, "plan_state", None) == "proposed"]
+    if planning:
+        pending += (f"Plans awaiting your approval: {', '.join(planning)}. Read each plan "
+                    "(it arrived as a message) and call approve_plan, with feedback and "
+                    "approved=false to ask for changes; the worker is waiting on you.\n\n")
     stuck = ""
     if stalled:
         names = ", ".join(a.id for a in stalled)

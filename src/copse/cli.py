@@ -614,6 +614,32 @@ def history(
 
 
 @app.command()
+def learning(
+    reset: bool = typer.Option(False, "--reset", help="Ask the plugin to forget this repo."),
+) -> None:
+    """What the repo's learning plugin has learned about which profiles fit which tasks."""
+    from copse import learning as learning_mod
+    from copse.config import load_repo_config
+
+    try:
+        repo_root = git.main_repo_root(os.getcwd())
+    except git.GitError:
+        typer.echo("not in a git repo")
+        raise typer.Exit(1)
+    cfg = load_repo_config(repo_root)
+    if cfg.learning == "off":
+        found = learning_mod.installed()
+        typer.echo('learning is off. Set "learning" in .copse/config.json to a plugin\'s name'
+                   + (f" (installed: {', '.join(found)})." if found else "; no learning plugin is installed."))
+        return
+    p = learning_mod.plugin(cfg, repo_root)
+    if p is None:
+        typer.echo(f"no learning plugin named {cfg.learning!r} is installed")
+        raise typer.Exit(1)
+    typer.echo(p.report(reset=reset))
+
+
+@app.command()
 def watch(
     all_repos: bool = typer.Option(False, "--all", help="Every repo, not just this one."),
     once: bool = typer.Option(False, "--once", help="Print one snapshot and exit."),

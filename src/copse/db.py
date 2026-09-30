@@ -290,6 +290,8 @@ class Agent:
     pipeline: str | None = None
     pipeline_rounds: int | None = None
     stuck_noted: float | None = None
+    plan_first: int | None = None      # must get its plan approved before editing (copse.agents.submit_plan)
+    plan_state: str | None = None      # proposed | approved | revise
 
 
 @dataclass
@@ -410,6 +412,7 @@ class Task:
     state: str
     created_at: float
     started_at: float | None = None
+    plan_first: int | None = None
 
 
 def _load(cls, row):
@@ -445,6 +448,12 @@ class DB:
                           ("pipeline", "TEXT"), ("pipeline_rounds", "INTEGER")):
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {kind}")
+        for col, kind in (("plan_first", "INTEGER"), ("plan_state", "TEXT")):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {kind}")
+        task_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}
+        if "plan_first" not in task_cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN plan_first INTEGER")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(autopilot)")}
         if "checking_since" not in cols:
             self.conn.execute("ALTER TABLE autopilot ADD COLUMN checking_since REAL")
