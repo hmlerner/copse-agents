@@ -86,6 +86,7 @@ class RepoConfig:
     sidebar: str = "left"              # where the dashboard sits: "left" of the chat or "bottom"
     learning: str = "off"              # "off" or an installed learning plugin's name (see copse.learning)
     learning_candidates: list[str] = field(default_factory=list)  # profiles the learner may pick from
+    message_delivery: str = "pull"     # agent messages to an interactive supervisor: "pull" (a notice, then read_messages) or "push" (the text itself)
     # Weight routing: task weight -> profiles to try, in order (see autopilot.choose_profile).
     routing: dict[str, list[str]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_ROUTING.items()})
 
@@ -141,7 +142,7 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
                 "usage_limit", "pool_size", "graphify", "stale_after", "pipeline",
                 "review_rounds", "overlap", "local_models", "merge_into",
                 "auto_merge_default_branch", "sidebar", "plan_first", "learning",
-                "learning_candidates", "limit_cooldown_minutes"):
+                "learning_candidates", "limit_cooldown_minutes", "message_delivery"):
         if key in local:
             setattr(cfg, key, local[key])
         elif key in shared:
