@@ -789,16 +789,22 @@ class DB:
         ).fetchone()
         return int(row[0])
 
+    NOTICE_TTL = 120.0  # seconds a notice counts as outstanding before another may go
+
     def claim_notice(self, agent_id: str) -> list[Message] | None:
         """The unread messages a new notice should cover, marking them noticed;
-        None when there are none, or a notice is already outstanding (one
-        covers everything unread, so a later message adds no second one)."""
+        None when there are none, or a notice went out within ``NOTICE_TTL``
+        (one covers everything unread, so a later message adds no second one;
+        after that a lost notice is sent again)."""
         with self.tx() as c:
             rows = c.execute(
                 "SELECT * FROM inbox WHERE agent_id=? AND held=1 AND delivered_at IS NULL ORDER BY id",
                 (agent_id,),
             ).fetchall()
-            if not rows or any(r["noticed_at"] is not None for r in rows):
+            if not rows:
+                return None
+            last = max((r["noticed_at"] or 0.0) for r in rows)
+            if last and time.time() - last < self.NOTICE_TTL:
                 return None
             c.execute(
                 "UPDATE inbox SET noticed_at=? WHERE agent_id=? AND held=1 AND delivered_at IS NULL",

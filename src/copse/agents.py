@@ -1795,7 +1795,7 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
                 return {"decision": "block", "reason": (
                     "[copse autopilot] You have unread messages. Call read_messages "
                     "before you stop.")}
-            claimed = db.claim_notice(agent_id)
+            claimed = None if payload.get("stop_hook_active") else db.claim_notice(agent_id)
             if claimed:  # the notice never went out (or was lost): hand it over now
                 db.set_status(agent_id, "processing")
                 return {"decision": "block", "reason": unread_notice(db, claimed)}

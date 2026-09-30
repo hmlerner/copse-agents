@@ -107,6 +107,31 @@ def test_stop_hook_blocks_autopilot_with_unread(db, boss, pushed):
     assert not out or "read_messages" not in out.get("reason", "")
 
 
+def _age_notices(db, seconds):
+    with db.tx() as c:
+        c.execute("UPDATE inbox SET noticed_at=noticed_at-?", (seconds,))
+
+
+def test_stale_notice_is_resent_on_new_message(db, boss, pushed):
+    agents.send_message(db, "boss", "one", sender_id="w1")
+    agents.send_message(db, "boss", "two", sender_id="w1")
+    assert len(pushed) == 1
+    _age_notices(db, db.NOTICE_TTL + 1)  # the first notice was lost
+    agents.send_message(db, "boss", "three", sender_id="w1")
+    assert len(pushed) == 2
+    assert pushed[1] == "copse: 3 new messages (from w1). Call read_messages."
+
+
+def test_stop_hook_resends_stale_notice_once(db, boss, pushed):
+    agents.send_message(db, "boss", "one", sender_id="w1")
+    assert not agents.handle_hook(db, "boss", "stop", {})  # fresh notice: nothing more
+    _age_notices(db, db.NOTICE_TTL + 1)
+    assert agents.handle_hook(db, "boss", "stop", {"stop_hook_active": True}) is None
+    out = agents.handle_hook(db, "boss", "stop", {})
+    assert out["decision"] == "block" and "read_messages" in out["reason"]
+    assert not agents.handle_hook(db, "boss", "stop", {})  # once
+
+
 def test_stop_hook_hands_over_lost_notice(db, boss, monkeypatch):
     db.enqueue_held("boss", "body", "w1")
     out = agents.handle_hook(db, "boss", "stop", {})
