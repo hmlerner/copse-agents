@@ -56,12 +56,20 @@ def _ws(db: DB, ref: str) -> Workspace:
 _busy_worker = pipeline.busy_worker
 
 
-def _policy_refusal(caller: Agent | None, ws: Workspace, profile: str, task: str, mode: str,
+def _running_workers(db: DB, repo_root: str) -> int | None:
+    try:
+        return policy.running_workers(db, repo_root)
+    except Exception:
+        return None
+
+
+def _policy_refusal(db: DB, caller: Agent | None, ws: Workspace, profile: str, task: str, mode: str,
                     files: list[str] | None, weight: str | None, branch: str | None) -> str | None:
     """The reply when the repo's policy plugin refuses this delegation, else None."""
     verdict = policy.check_assign(
         load_repo_config(ws.repo_root), ws.repo_root, profile, task, mode,
         files=files, weight=weight, branch=branch, actor=caller,
+        running_workers=_running_workers(db, ws.repo_root),
     )
     if verdict.allowed:
         return None
@@ -227,7 +235,7 @@ async def handoff(
                 db, caller.id, ws.repo_root, agent_profile, task, files, weight, why)
         except autopilot.AutopilotError as e:
             return str(e)
-        refused = _policy_refusal(caller, ws, profile, task, "handoff", files, weight, branch)
+        refused = _policy_refusal(db, caller, ws, profile, task, "handoff", files, weight, branch)
         if refused:
             return refused
         try:
@@ -328,7 +336,7 @@ async def assign(
                 db, caller.id, ws.repo_root, agent_profile, task, files, weight, why)
         except autopilot.AutopilotError as e:
             return str(e)
-        refused = _policy_refusal(caller, ws, profile, task, "assign", files, weight, branch)
+        refused = _policy_refusal(db, caller, ws, profile, task, "assign", files, weight, branch)
         if refused:
             return refused
         try:
