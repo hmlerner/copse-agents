@@ -528,11 +528,107 @@ def usage_note(u: dict) -> str:
 
 
 def limit_reached(db: DB, agent: Agent) -> None:
-    """A turn failed on the usage limit: stop pushing until the user is back."""
+    """A turn failed on its provider's usage limit: stop pushing until the
+    user is back. Only Claude's window is tracked (see ``usage``), so only a
+    Claude limit, with a reset time known, stops that provider's workers and
+    resumes on its own; any other provider's just blocks and names it."""
     ap = db.get_autopilot(root_of(db, agent.id))
-    if ap and ap.enabled:
-        db.update_autopilot(ap.root_id, state="blocked", nudges=0,
-                            note="Claude's usage limit was reached. Continue when it resets.")
+    if not ap or not ap.enabled:
+        return
+    u = usage() if agent.provider == "claude" else None
+    if u and isinstance(u.get("resets_at"), (int, float)):
+        _pause_provider(db, ap.root_id, agent.provider, u["resets_at"],
+                        "Claude's usage limit was reached")
+        return
+    db.update_autopilot(ap.root_id, state="blocked", nudges=0,
+                        note=f"The {agent.provider} provider's usage limit was reached. "
+                        "Continue when it resets.")
+
+
+def _pause_provider(db: DB, root_id: str, provider: str, resets_at: float, why: str) -> None:
+    from copse import agents
+
+    stopped = [a for a in active_workers(db, root_id)
+               if agents.runs_process(a) and a.provider == provider]
+    for a in stopped:
+        agents.pause_worker(db, a)
+    note = f"{why}. Autopilot paused so work doesn't stall halfway"
+    if stopped:
+        note += f"; {len(stopped)} {provider} worker(s) stopped until then"
+    db.update_autopilot(root_id, state="usage_paused", usage_resets_at=float(resets_at),
+                        usage_paused_ids=json.dumps([a.id for a in stopped]),
+                        note=note + ".", nudges=0)
+
+
+def over_limit(db: DB, root_id: str, cfg: RepoConfig) -> bool:
+    """Usage is at the limit: stop the session's workers until the window
+    resets (autopilot state "usage_paused"). Without a reset time to wait for,
+    autopilot is just blocked, as the user has to say when to go on."""
+    u = usage()
+    if not u or u["used"] < cfg.usage_limit:
+        return False
+    resets_at = u.get("resets_at")
+    if not isinstance(resets_at, (int, float)):
+        db.update_autopilot(root_id, state="blocked", note=usage_note(u)
+                            + ". Autopilot paused so work doesn't stall halfway.")
+        return True
+    _pause_provider(db, root_id, "claude", resets_at, usage_note(u))
+    return True
+
+
+def usage_resume(db: DB, root_id: str, now: float | None = None) -> str | None:
+    """Once the usage window has reset, bring back the workers stopped for it
+    and tell the supervisor. Returns what was done, or None if still waiting."""
+    ap = db.get_autopilot(root_id)
+    if ap is None or ap.state != "usage_paused" or ap.usage_resets_at is None:
+        return None
+    now = time.time() if now is None else now
+    if now <= ap.usage_resets_at:
+        return None
+    from copse import agents
+
+    root = db.get_agent(root_id)
+    if root is None or root.status in ("paused", "done") or not agents.is_alive(root):
+        return None  # the session itself is stopped: `copse continue` brings it back
+    ws = db.get_workspace(root.workspace_id)
+    cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
+    u = usage()
+    if u and u["used"] >= cfg.usage_limit:
+        return None  # the fresh reading says the limit still holds
+    try:
+        ids = set(json.loads(ap.usage_paused_ids or "[]"))
+    except ValueError:
+        ids = set()
+    resumed = agents.resume(db, root_id, only=ids) if ids else []
+    db.update_autopilot(root_id, state="running", note=None, usage_resets_at=None,
+                        usage_paused_ids=None, nudges=0)
+    what = (f"resumed {', '.join(a.id for a in resumed)}" if resumed
+            else "no workers needed resuming")
+    agents.send_message(db, root_id, "[copse autopilot] Claude's usage window has reset, "
+                        f"so autopilot is running again: {what}.")
+    return f"usage reset for {root_id}: {what}"
+
+
+def usage_sweep(db: DB, now: float | None = None) -> list[str]:
+    """One pass over every autopilot session: stop workers at the limit,
+    resume them after the reset. Called from the cull sweep."""
+    done = []
+    for root in db.list_agents():
+        if root.mode != "interactive" or root.status in ("paused", "done"):
+            continue
+        ap = db.get_autopilot(root.id)
+        if ap is None or not ap.enabled:
+            continue
+        if ap.state == "running" and ap.goal:
+            ws = db.get_workspace(root.workspace_id)
+            cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
+            if over_limit(db, root.id, cfg):
+                done.append(f"usage limit reached: {root.id} is {db.get_autopilot(root.id).state}")
+        elif ap.state == "usage_paused":
+            line = usage_resume(db, root.id, now)
+            if line:
+                done.append(line)
+    return done
 
 
 # -- the Stop hook -------------------------------------------------------------------
@@ -550,6 +646,10 @@ def on_stop(db: DB, agent: Agent, payload: dict) -> dict | None:
         return None
     from copse import agents
 
+    ws = db.get_workspace(agent.workspace_id)
+    cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
+    if over_limit(db, agent.id, cfg):
+        return None  # workers included: they'd keep burning usage
     if checking(ap):
         return None  # the check's result arrives as a message and wakes it up
     working, stalled = split_workers(db, agent.id, screen=True)
@@ -558,12 +658,6 @@ def on_stop(db: DB, agent: Agent, payload: dict) -> dict | None:
     if any(agents.runs_process(a) for a in working
             if getattr(a, "plan_state", None) != "proposed"):
         return None  # their results arrive as messages and wake it up
-    ws = db.get_workspace(agent.workspace_id)
-    cfg = load_repo_config(ws.repo_root) if ws else RepoConfig()
-    u = usage()
-    if u and u["used"] >= cfg.usage_limit:
-        db.update_autopilot(agent.id, state="blocked", note=usage_note(u) + ". Autopilot paused so work doesn't stall halfway.")
-        return None
     nudges = ap.nudges if ap.nudged_at == ap.progress else 0
     if nudges >= MAX_NUDGES:
         db.update_autopilot(agent.id, state="stalled", nudges=0,

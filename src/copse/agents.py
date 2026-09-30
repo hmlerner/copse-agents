@@ -835,13 +835,15 @@ def latest_paused(db: DB, ws: Workspace) -> Agent | None:
     return max(roots, key=lambda a: a.status_since or 0, default=None)
 
 
-def resume(db: DB, root_id: str, *, watch_pane: bool = True) -> list[Agent]:
+def resume(db: DB, root_id: str, *, watch_pane: bool = True,
+           only: set[str] | None = None) -> list[Agent]:
     """Bring a paused session back: the supervisor and its paused workers
     restart in their own workspaces. Claude Code picks up its previous
-    conversation (--resume); other CLIs restart on their original task."""
+    conversation (--resume); other CLIs restart on their original task.
+    With ``only``, just those agents (if paused) restart."""
     resumed = []
     for a in tree(db, root_id):
-        if a.status != "paused":
+        if a.status != "paused" or (only is not None and a.id not in only):
             continue
         ws = db.get_workspace(a.workspace_id)
         if ws is None or not os.path.isdir(ws.path):
@@ -1345,6 +1347,14 @@ def _stop(db: DB, agent: Agent) -> None:
         tmux.kill_window(window)
     procs.stop([agent.id], {agent.id: pane_pids})
     db.end_native_subagents(agent.id)
+
+
+def pause_worker(db: DB, agent: Agent) -> None:
+    """Stop one worker but keep its work, as ``pause`` does for a session: its
+    worktree, branch, queued messages and CLI session stay, and ``resume``
+    brings it back."""
+    _stop(db, agent)
+    db.set_status(agent.id, "paused")
 
 
 def kill(db: DB, agent_id: str) -> None:
