@@ -441,7 +441,7 @@ def test_copse_learning_command_explains_auto(repo, monkeypatch):
     monkeypatch.chdir(repo)
     res = CliRunner().invoke(app, ["learning"])
     assert res.exit_code == 0, res.output
-    assert "copse Pro" in res.output and "copse account status" in res.output
+    assert "copse Pro" in res.output and "copse account upgrade" in res.output
 
 
 def test_account_status_shows_cloud_learning(parts, remote):
