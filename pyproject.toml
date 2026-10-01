@@ -1,6 +1,6 @@
 [project]
 name = "copse-agents"
-version = "0.14.2"
+version = "0.14.3"
 description = "Run coding agents in parallel, each on its own git branch, with a supervisor that delegates, reviews, and merges"
 readme = "README.md"
 requires-python = ">=3.11"
