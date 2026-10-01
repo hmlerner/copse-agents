@@ -326,8 +326,8 @@ def render(snap: list[dict], now: float, width: int = 80, pilot: dict | None = N
 
 # -- --once ------------------------------------------------------------------
 
-ANSI = {"bold": "1", "dim": "2", "busy": "36", "ok": "32", "alert": "1;33", "bad": "31",
-        "accent": "1;35"}
+ANSI = {"bold": "1", "dim": "2", "busy": "35", "ok": "32", "alert": "1;33", "bad": "31",
+        "accent": "1;32"}
 
 
 def print_once(db: DB, repo_root: str | None, color: bool) -> str:
@@ -616,18 +616,19 @@ def _next_needing(state: NavState, lines: list[Line]) -> None:
     state.follow = True
 
 
-# PawDelta palette as xterm-256 colours (closest matches): indigo accent,
-# soft green / amber / rose for states, slate greys for secondary text.
+# The site's copse window (pawdelta.com/copse, Canopy night) as xterm-256
+# colours (closest matches): canopy-green accent, lavender for working,
+# amber for needs you, grey-green for secondary text.
 PALETTE_256 = {
-    "accent": 105,    # ~#818cf8 indigo-light
-    "busy": 141,      # soft purple: working
-    "ok": 79,         # soft green: idle / done
-    "alert": 215,     # amber: needs you
+    "accent": 115,    # ~#86c99c canopy green
+    "busy": 147,      # ~#c3a6ff lavender: working
+    "ok": 115,        # canopy green: idle / done
+    "alert": 179,     # ~#e9b45e amber: needs you
     "bad": 174,       # dusty rose: stopped
-    "dim": 245,       # slate
-    "trunk": 94,      # brown: the logo's trunk
-    "text": 255,
-    "select_bg": 237, # subtle row highlight
+    "dim": 102,       # ~#7f8c84 grey-green
+    "trunk": 137,     # ~#a37a4c bark: the logo's trunk
+    "text": 254,      # ~#e3e9e2
+    "select_bg": 235, # ~#1f2a23 subtle row highlight
 }
 
 
@@ -647,12 +648,12 @@ def _styles() -> dict[str, int]:
                  ("trunk", p["trunk"], -1),
                  ("bar", p["accent"], p["select_bg"])]
     else:
-        pairs = [("accent", curses.COLOR_MAGENTA, -1), ("busy", curses.COLOR_MAGENTA, -1),
+        pairs = [("accent", curses.COLOR_GREEN, -1), ("busy", curses.COLOR_MAGENTA, -1),
                  ("ok", curses.COLOR_GREEN, -1), ("alert", curses.COLOR_YELLOW, -1),
                  ("bad", curses.COLOR_RED, -1), ("dim", -1, -1), ("normal", -1, -1),
-                 ("select", curses.COLOR_WHITE, curses.COLOR_BLUE),
+                 ("select", curses.COLOR_WHITE, curses.COLOR_BLACK),
                  ("trunk", curses.COLOR_YELLOW, -1),
-                 ("bar", curses.COLOR_MAGENTA, curses.COLOR_BLUE)]
+                 ("bar", curses.COLOR_GREEN, curses.COLOR_BLACK)]
     for i, (name, fg, bg) in enumerate(pairs, start=1):
         curses.init_pair(i, fg, bg)
         attrs[name] = curses.color_pair(i)
@@ -793,7 +794,7 @@ def _loop(stdscr, repo_root: str | None, sidebar: bool = False) -> None:
         for y, (i, ln) in enumerate(enumerate(page, start=offset), start=content_top):
             attr = styles.get(ln.style, curses.A_NORMAL)
             if i == selected:
-                # A purple bar and a subtle highlight, not inverted colours.
+                # A green bar and a subtle highlight, not inverted colours.
                 stdscr.addnstr(y, 0, "▌", 1, styles["bar"])
                 stdscr.addnstr(y, 1, ln.text.ljust(w - 2), w - 2,
                                styles["select"] | (attr & curses.A_BOLD))
