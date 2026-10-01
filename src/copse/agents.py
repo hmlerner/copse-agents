@@ -555,8 +555,11 @@ def _airgap_check(profile, repo_root: str) -> None:
 
     try:
         cfg = load_repo_config(repo_root)
-    except ValueError:
-        cfg = None
+    except ValueError as e:
+        # A broken config might be the one that says "airgap": true; refuse
+        # rather than guess (fail closed).
+        raise AgentError(f"can't read this repo's copse config, so air-gap mode can't be "
+                         f"ruled out: {e}") from e
     if not airgap.enabled(cfg):
         return
     ok, why = airgap.profile_allowed(profile)

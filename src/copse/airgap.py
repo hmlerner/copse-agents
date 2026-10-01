@@ -53,9 +53,16 @@ def arm() -> None:
     dashboard) is air-gapped for all of them once one of them asks, and
     nothing a later config says turns it back off. That fails safe; the cost
     is that an unrelated repo in the same process loses hosted providers too,
-    which ``copse doctor`` reports as on via the config file."""
+    which ``copse doctor`` then shows as air-gap on for every repo.
+    Clears the in-process entitlement cache, so nothing fetched over the
+    network before arming is served afterwards."""
     global _armed
     _armed = True
+    try:
+        from copse.pro import license
+        license.clear_cache()
+    except Exception:  # noqa: BLE001 - arming must never fail
+        pass
     warn_if_unlicensed()
 
 

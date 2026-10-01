@@ -771,3 +771,25 @@ def test_doctor_reads_air_gap_from_the_repo_config(repo):
 def test_doctor_renders_the_air_gap_lines(on, repo):
     text = doctor.render(doctor.airgap_checks(str(repo)))
     assert "! air-gap" in text and "hosted profiles" in text
+
+
+def test_a_broken_config_fails_closed_at_launch(tmp_path):
+    from copse import agents
+
+    (tmp_path / ".copse").mkdir()
+    (tmp_path / ".copse" / "config.json").write_text("{not json")
+    with pytest.raises(agents.AgentError, match="air-gap mode can't be ruled out"):
+        agents._airgap_check(None, str(tmp_path))
+
+
+def test_arming_drops_a_cached_entitlement(monkeypatch):
+    from copse import airgap
+    from copse.pro import license
+
+    cleared = []
+    monkeypatch.setattr(license, "clear_cache", lambda: cleared.append(1))
+    airgap.arm()
+    try:
+        assert cleared
+    finally:
+        airgap.reset()
