@@ -155,6 +155,10 @@ def require_ci(client=None):
             ent = entitlement_from_token(token, client)
         else:
             ent = license.current(client=client) if client is not None else license.current()
+    except auth.AirGapped as e:
+        raise CIError(f"copse ci: {e}; a CI token can't be exchanged offline, so in air-gap "
+                      f"mode unset {TOKEN_ENV} and install an offline license "
+                      "(`copse account license install <file>`)") from e
     except auth.AuthError as e:
         raise CIError(f"copse ci: {TOKEN_ENV} was refused ({e.code}); set it to a CI token "
                       "from `copse account org ci-token create`") from e

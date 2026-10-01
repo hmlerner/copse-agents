@@ -517,6 +517,57 @@ key) that the server can't reverse. Never the task text, prompts, diffs,
 file names, paths or branch names. See `src/copse/pro/learning.py` and
 `src/copse/pro/team_events.py` for the exact payloads.
 
+### Air-gapped mode (copse Enterprise)
+
+For machines that must not talk to the internet at all, air-gap mode turns
+copse into a local-only tool: nothing is sent to the copse Pro backend, no
+telemetry of any kind leaves the machine, and delegation only reaches models
+that run on this machine or your private network.
+
+```json
+{"airgap": true}
+```
+
+in `.copse/config.json` (or `.copse/config.local.json`) turns it on for a
+repo; `COPSE_AIRGAP=1` turns it on for a process. Either is enough, and
+neither can turn the other off. Once a process has loaded an air-gapped
+repo's config it stays air-gapped for every repo it serves until it exits
+(fail safe: a dashboard or MCP server spanning repos never leaks for one of
+them). With it on:
+
+* **No outbound traffic.** Every copse Pro request (login, entitlement
+  refresh, key fetches, hosted learning, the team policy, the audit feed) is
+  refused before it reaches the network. Learning falls back to the local
+  learner, audit events are not recorded, and the entitlement comes from an
+  offline license that is never refreshed.
+* **Local models only.** No agent with a hosted provider (`claude`, `codex`,
+  `antigravity`, ...) is launched: not a worker, not a reviewer, not a
+  subagent, and not the chat itself. A profile runs only with the native
+  provider on a loopback or private-network `base_url` (`localhost`,
+  `127.0.0.1`, `::1`, `10.x`, `172.16-31.x`, `192.168.x`), or a native
+  profile marked `local: true` (for an endpoint named by a hostname copse
+  can't check offline; the flag is ignored on hosted providers). Point
+  `default_agent`, `routing` and `reviewer` at such profiles; see "The
+  native provider" below. In particular, `copse` itself won't start unless
+  `default_agent` is a local profile: the supervisor is an agent like any
+  other, and a hosted one would send your repo to its service. The native
+  provider also refuses a request to an endpoint that isn't local, as a
+  second line of defence.
+* **An offline license.** copse Enterprise issues a signed license file.
+  `copse account license install <file>` verifies it against the keys pinned
+  in copse (no network) and stores it under `~/.copse/pro`; `copse account
+  license status` shows it. Air-gap mode is a feature of that license: with
+  one that doesn't include it, copse still blocks everything (fail safe) and
+  `copse doctor` and `copse account status` say the plan doesn't include it.
+* **An offline team policy.** With a Team license, the org policy is read
+  from `.copse/policy.json` in the repo instead of being fetched: the same
+  JSON `copse account org policy` shows, e.g. `{"org_id": "org_...",
+  "version": 3, "policy": {"allowed_providers": ["native"], "allowed_models":
+  null, "require_human_review": true, "max_parallel_workers": 4}}`. Without
+  the file, delegations and merges are refused until it is there.
+
+`copse doctor` shows whether air-gap mode is on and licensed, which configured
+profiles it refuses, and whether the offline license and policy are in place.
 ### Audit log (copse Enterprise)
 
 With a plan that includes `audit`, copse keeps a local, tamper-evident record
@@ -547,7 +598,6 @@ copse audit pubkey                               # this install's public key (he
 one altered in place (hash or signature), one removed, inserted or reordered
 (seq and prev_hash), or a truncated tail. Verifying and exporting never need
 the entitlement, so a log keeps its value after a plan lapses.
-
 ### Copse-CI: issues into pull requests
 
 copse Team can run copse with nobody at a terminal. `copse ci run` cuts a

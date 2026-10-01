@@ -137,15 +137,24 @@ def check_assign(cfg: RepoConfig, repo_root: str, profile: str, task: str, mode:
                  branch: str | None = None, actor: Agent | None = None,
                  running_workers: int | None = None) -> Decision:
     """The plugin's decision on starting ``task`` with ``profile`` (allow
-    without a plugin)."""
+    without a plugin). In air-gap mode (``copse.airgap``) only a local
+    profile gets as far as the plugin."""
+    from copse import airgap
+
     provider, model = _profile_fields(profile, repo_root)
     info = AssignInfo(
         repo_root=repo_root, task=task, files=tuple(files or ()), weight=weight,
         profile=profile, provider=provider, model=model, mode=mode, branch=branch,
         actor=actor.id if actor else "user", running_workers=running_workers,
     )
-    d = _decide("delegation", cfg, repo_root, lambda p: p.check_assign(info))
-    if not d.allowed:
+    d = allow()
+    if airgap.enabled(cfg):
+        ok, why = airgap.check_profile(profile, repo_root)
+        if not ok:
+            d = deny(why)
+    if d.allowed:
+        d = _decide("delegation", cfg, repo_root, lambda p: p.check_assign(info))
+    if not d.allowed:              # an air-gap refusal is audited like any other denial
         from copse import events
 
         events.emit_denial(cfg, repo_root, "assign", d.reason, branch=branch, profile=profile,

@@ -93,6 +93,8 @@ class RepoConfig:
     # unset: the only one installed, if exactly one (see copse.plugins).
     plugins: dict[str, str] = field(default_factory=dict)
     message_delivery: str = "pull"     # agent messages to an interactive supervisor: "pull" (a notice, then read_messages) or "push" (the text itself)
+    # Air-gap mode (copse Enterprise; see copse.airgap): no outbound traffic, local models only.
+    airgap: bool = False
     # Weight routing: task weight -> profiles to try, in order (see autopilot.choose_profile).
     routing: dict[str, list[str]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_ROUTING.items()})
 
@@ -170,6 +172,12 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
                     cfg.routing[tier] = [n for n in names if isinstance(n, str)]
     if cfg.pool_size is None:
         cfg.pool_size = 1 if cfg.setup else 0
+    # Air-gap mode: either file may turn it on, and neither may turn it off.
+    cfg.airgap = bool(shared.get("airgap", False)) or bool(local.get("airgap", False))
+    if cfg.airgap:
+        from copse import airgap
+
+        airgap.arm()
     return cfg
 
 
