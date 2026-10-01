@@ -12,7 +12,9 @@ see ``copse.plugins`` for how one is selected. Without a plugin everything
 is allowed. A policy fails closed: once a plugin is in play, an exception,
 an unreadable answer, or a plugin the repo config names that can't be loaded
 refuses the delegation or merge, since a policy that errors open (skipping a
-required human review, say) is worse than one that blocks.
+required human review, say) is worse than one that blocks. Every refusal is
+also reported to the repo's events plugins (``deny_assign`` / ``deny_merge``
+with the reason; see ``copse.events``).
 """
 
 from __future__ import annotations
@@ -135,14 +137,29 @@ def check_assign(cfg: RepoConfig, repo_root: str, profile: str, task: str, mode:
                  branch: str | None = None, actor: Agent | None = None,
                  running_workers: int | None = None) -> Decision:
     """The plugin's decision on starting ``task`` with ``profile`` (allow
-    without a plugin)."""
+    without a plugin). In air-gap mode (``copse.airgap``) only a local
+    profile gets as far as the plugin."""
+    from copse import airgap
+
     provider, model = _profile_fields(profile, repo_root)
     info = AssignInfo(
         repo_root=repo_root, task=task, files=tuple(files or ()), weight=weight,
         profile=profile, provider=provider, model=model, mode=mode, branch=branch,
         actor=actor.id if actor else "user", running_workers=running_workers,
     )
-    return _decide("delegation", cfg, repo_root, lambda p: p.check_assign(info))
+    d = allow()
+    if airgap.enabled(cfg):
+        ok, why = airgap.check_profile(profile, repo_root)
+        if not ok:
+            d = deny(why)
+    if d.allowed:
+        d = _decide("delegation", cfg, repo_root, lambda p: p.check_assign(info))
+    if not d.allowed:              # an air-gap refusal is audited like any other denial
+        from copse import events
+
+        events.emit_denial(cfg, repo_root, "assign", d.reason, branch=branch, profile=profile,
+                           provider=provider, model=model, actor=info.actor)
+    return d
 
 
 def running_workers(db: DB, repo_root: str) -> int:
@@ -169,7 +186,14 @@ def check_merge(cfg: RepoConfig, ws: Workspace, worker: Agent | None,
         provider=worker.provider if worker else None, model=model,
         actor=actor.id if actor else "user",
     )
-    return _decide("merge", cfg, ws.repo_root, lambda p: p.check_merge(info))
+    d = _decide("merge", cfg, ws.repo_root, lambda p: p.check_merge(info))
+    if not d.allowed:
+        from copse import events
+
+        events.emit_denial(cfg, ws.repo_root, "merge", d.reason, branch=ws.branch,
+                           profile=info.profile, provider=info.provider, model=model,
+                           actor=info.actor, agent_id=info.agent_id, workspace_id=ws.id)
+    return d
 
 
 __all__ = ["GROUP", "AssignInfo", "Decision", "MergeInfo", "PolicyPlugin", "allow",

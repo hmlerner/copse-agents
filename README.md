@@ -262,6 +262,7 @@ your own status line prints, so what you see doesn't change.
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
 | `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
 | `copse account login\|logout\|status\|upgrade\|portal\|org` | your copse Pro account (see "copse Pro and Team" below) |
+| `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
 | `copse attach / cd / open [WS]` | tmux session / path / editor |
 | `copse status / diff [--stat] [WS]` | compared with the base branch (committed + uncommitted) |
@@ -390,8 +391,28 @@ Autopilot, merge gates and cleanup:
 | `message_delivery` | `"pull"` | how agent and copse messages reach an interactive supervisor: `"pull"` keeps them unread and delivers one notice ("copse: 2 new messages (from 9f742c5c, pipeline). Call read_messages."; the sidebar shows an unread count), `"push"` delivers each message's text. Messages you send (`copse send`, typing) and messages to workers are always pushed |
 | `learning` | `"auto"` | which learning plugin records how worker tasks turned out and suggests profiles (see below): `"auto"` is copse Pro's hosted learning when your plan includes it and nothing otherwise; `"off"`; or an installed plugin's name |
 | `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
-| `plugins` | `{}` | which installed plugin to use per group, e.g. `{"events": "<name>", "policy": "off"}`; unset, a group uses the only plugin installed in it (see "Plugins" below) |
+| `plugins` | `{}` | which installed plugin to use per group, e.g. `{"events": "<name>", "policy": "off"}`; unset, a group uses the only plugin installed in it, except `events`, which uses every installed one (several names: `"pro, audit"`; see "Plugins" below) |
 | `routing` | see below | for each task weight (`light`, `medium`, `heavy`), the profiles `assign`/`handoff` try in order |
+| `services` | `[]` | per-worktree Docker services (copse Pro; see "Per-worktree services" below) |
+
+### Per-worktree services
+
+With copse Pro, each worktree can get its own database or cache, so parallel agents never share one. List them in `.copse/config.json`:
+
+```json
+{"services": [
+  {"name": "db", "preset": "postgres"},
+  {"name": "cache", "preset": "redis"},
+  {"name": "search", "image": "opensearchproject/opensearch:2", "port": 9200,
+   "env": {"SEARCH_URL": "http://127.0.0.1:{port}"}}
+]}
+```
+
+Each entry takes `name`, an optional `preset` (`postgres`, `redis` or `mongo`, which fill in the image, container `port` and default env such as `DATABASE_URL=postgres://postgres:copse@127.0.0.1:{port}/app`), `image`, `port` (the container's port) and `env`. In `env` templates, `{port}` is the host port, `{name}` the service name and `{workspace}` the workspace name.
+
+When a workspace is created (including from the pool), copse starts one container per service, named `copse-<repo>-<workspace>-<service>`, bound to `127.0.0.1` on a port from the worktree's own block (`COPSE_PORT_BASE` + 1 + the service's index, leaving `COPSE_PORT_BASE` to your app, so at most 9 services). The rendered env and `COPSE_SVC_<NAME>_PORT` reach agents and `setup` commands. `copse rm` (and the idle cull) remove every container labelled with the workspace, even if the config changed since. Running `up` again replaces the containers.
+
+`copse services [ls|up|down] [workspace]` lists, starts or stops them by hand. Without copse Pro, copse prints a one-line notice and starts nothing; if Docker isn't installed it warns and carries on. `copse doctor` reports Docker when services are configured.
 
 ### Routing by weight
 
@@ -446,14 +467,17 @@ named):
 | `copse.account` | `copse/account.py` | handles `copse account ...` |
 
 An entry point's object is a factory `make(repo_root)` returning the plugin
-(or `None`), called once per repo per process. The events, policy and account
-groups select themselves: when exactly one plugin is installed in a group it's
-used; with several, or to turn one off, set `plugins` in the config. With no
-plugin, every delegation and merge is allowed and nothing is reported. A
-plugin that's missing, broken or raises is logged and ignored, never failing
-what copse was doing. copse's own Pro and Team plugins (`pro` in the events,
-policy and account groups, `cloud` in learning; `src/copse/pro`) are always
-installed and do nothing until you log in to a plan that includes them.
+(or `None`), called once per repo per process. The policy and account groups
+select themselves: when exactly one plugin is installed in a group it's used;
+with several, or to turn one off, set `plugins` in the config. The events
+group fans out: every installed events plugin hears every event, unless
+`plugins.events` names the ones to use (`"audit"`, `"pro, audit"`, or `"off"`).
+With no plugin, every delegation and merge is allowed and nothing is reported.
+A plugin that's missing, broken or raises is logged and ignored, never failing
+what copse was doing. copse's own Pro, Team and Enterprise plugins (`pro` in
+the events, policy and account groups, `audit` in events, `cloud` in learning;
+`src/copse/pro`) are always installed and do nothing until you log in to a
+plan that includes them.
 
 ## copse Pro and Team
 
@@ -466,9 +490,18 @@ Plans and prices: https://pawdelta.com/copse#pricing.
 ```sh
 copse account login      # log in in your browser (device code); copse checks the plan offline from then on
 copse account status     # your plan, features, hosted learning on or off, when the entitlement expires
-copse account upgrade    # the checkout URL for a bigger plan
-copse account portal     # the billing portal (invoices, seats, cancellation)
+copse account upgrade    # the checkout URL for copse Pro
+copse account portal     # the billing portal (invoices, seats, cancellation); --org ORG for a team org
 copse account org list   # the orgs you belong to; `org use <id>` switches, `org policy` shows the current one
+```
+
+Setting up a team takes no sign-up form:
+
+```sh
+copse account org create "Acme Eng"                    # a team org you own
+copse account upgrade --team --seats 5 --org org_...   # check out copse Team for it
+copse account org invite dev@acme.com --org org_...    # prints a one-time `org join` code (--admin for admins)
+copse account org join cpi_...                         # your teammate, logged in with that email
 copse account logout     # revoke this device's session and forget its credentials
 ```
 
@@ -483,6 +516,146 @@ agents and branches are named only by keyed hashes (HMACs under your org's
 key) that the server can't reverse. Never the task text, prompts, diffs,
 file names, paths or branch names. See `src/copse/pro/learning.py` and
 `src/copse/pro/team_events.py` for the exact payloads.
+
+### Air-gapped mode (copse Enterprise)
+
+For machines that must not talk to the internet at all, air-gap mode turns
+copse into a local-only tool: nothing is sent to the copse Pro backend, no
+telemetry of any kind leaves the machine, and delegation only reaches models
+that run on this machine or your private network.
+
+```json
+{"airgap": true}
+```
+
+in `.copse/config.json` (or `.copse/config.local.json`) turns it on for a
+repo; `COPSE_AIRGAP=1` turns it on for a process. Either is enough, and
+neither can turn the other off. Once a process has loaded an air-gapped
+repo's config it stays air-gapped for every repo it serves until it exits
+(fail safe: a dashboard or MCP server spanning repos never leaks for one of
+them). With it on:
+
+* **No outbound traffic.** Every copse Pro request (login, entitlement
+  refresh, key fetches, hosted learning, the team policy, the audit feed) is
+  refused before it reaches the network. Learning falls back to the local
+  learner, audit events are not recorded, and the entitlement comes from an
+  offline license that is never refreshed.
+* **Local models only.** No agent with a hosted provider (`claude`, `codex`,
+  `antigravity`, ...) is launched: not a worker, not a reviewer, not a
+  subagent, and not the chat itself. A profile runs only with the native
+  provider on a loopback or private-network `base_url` (`localhost`,
+  `127.0.0.1`, `::1`, `10.x`, `172.16-31.x`, `192.168.x`), or a native
+  profile marked `local: true` (for an endpoint named by a hostname copse
+  can't check offline; the flag is ignored on hosted providers). Point
+  `default_agent`, `routing` and `reviewer` at such profiles; see "The
+  native provider" below. In particular, `copse` itself won't start unless
+  `default_agent` is a local profile: the supervisor is an agent like any
+  other, and a hosted one would send your repo to its service. The native
+  provider also refuses a request to an endpoint that isn't local, as a
+  second line of defence.
+* **An offline license.** copse Enterprise issues a signed license file.
+  `copse account license install <file>` verifies it against the keys pinned
+  in copse (no network) and stores it under `~/.copse/pro`; `copse account
+  license status` shows it. Air-gap mode is a feature of that license: with
+  one that doesn't include it, copse still blocks everything (fail safe) and
+  `copse doctor` and `copse account status` say the plan doesn't include it.
+* **An offline team policy.** With a Team license, the org policy is read
+  from `.copse/policy.json` in the repo instead of being fetched: the same
+  JSON `copse account org policy` shows, e.g. `{"org_id": "org_...",
+  "version": 3, "policy": {"allowed_providers": ["native"], "allowed_models":
+  null, "require_human_review": true, "max_parallel_workers": 4}}`. Without
+  the file, delegations and merges are refused until it is there.
+
+`copse doctor` shows whether air-gap mode is on and licensed, which configured
+profiles it refuses, and whether the offline license and policy are in place.
+### Audit log (copse Enterprise)
+
+With a plan that includes `audit`, copse keeps a local, tamper-evident record
+of every action an agent took: each delegation (`assign`/`handoff`), review
+verdict, escalation, merge and worktree removal, and every delegation or merge
+the repo's policy refused (with the reason). Nothing leaves the machine; this
+is the `audit` events plugin (`src/copse/pro/audit_chain.py`) running next to
+the Team feed, and without the entitlement it writes nothing, not even a key.
+
+Each repo's log is an append-only JSONL file, `~/.copse/audit/<repo>-<hash>.jsonl`
+(0600, in a 0700 directory). Every record carries `seq`, `ts` (UTC), the full
+local event (kind, agent, branch, profile, provider, model, actor, workspace,
+repo, time, and the outcome: `approved`, `merged`, `reason`), `prev_hash` (the
+SHA-256 of the previous record's canonical JSON; 64 zeros for the first),
+`hash` (the SHA-256 of this record's seq, ts, event and prev_hash in canonical
+JSON) and `sig`, an Ed25519 signature over `hash` by a per-install key kept in
+`~/.copse/audit/signing.key` (0600, created on first use). A head file next to
+the log remembers the last seq, so records removed from the end are caught too.
+
+```sh
+copse audit verify [--repo PATH]                 # recompute the chain and check every signature;
+                                                 # prints the first broken seq and exits 1 if any
+copse audit export [--since ISO] [--format jsonl|csv]   # the records, for your SIEM or a spreadsheet
+copse audit pubkey                               # this install's public key (hex), to verify elsewhere
+```
+
+`verify` reports what went wrong at the first record that doesn't check out:
+one altered in place (hash or signature), one removed, inserted or reordered
+(seq and prev_hash), or a truncated tail. Verifying and exporting never need
+the entitlement, so a log keeps its value after a plan lapses.
+### Copse-CI: issues into pull requests
+
+copse Team can run copse with nobody at a terminal. `copse ci run` cuts a
+`copse/ci-<issue or slug>` branch, starts a supervisor with autopilot on in a
+detached tmux session, gives it the goal, and waits until every milestone's
+check passes. Then it pushes the branch and opens the pull request with `gh`
+(the body lists the goal, the milestones and their checks, and `Closes #N`
+for an issue), prints the PR URL and exits 0. It exits 1, with what happened,
+when the supervisor asks for a decision (`need_user`: the question is the
+reason), stalls, or runs out of time. The session and its workers are always
+stopped at the end, and a JSON summary goes to `$GITHUB_STEP_SUMMARY` when
+that is set.
+
+```sh
+copse ci run --issue 42                      # the goal is the issue's title and body
+copse ci run --goal "Add a /health endpoint" # or typed; a goals.md-shaped text brings its milestones
+copse ci run --goal-file .copse/goals.md --timeout 90 --max-workers 2 --base develop --no-pr
+copse ci init --label copse                  # the GitHub Actions workflow (see below)
+```
+
+With `--issue` and `--goal`, the supervisor derives the milestones and their
+checks itself; a goals.md-shaped goal (`# Goal`, `## Milestone`, `check:`) is
+recorded as written. `--max-workers` sets `max_agents` in the repo's
+`.copse/config.local.json`.
+
+`copse ci init` writes `.github/workflows/copse.yml`, which runs on
+`workflow_dispatch` and whenever an issue gets the label (`copse` by
+default): it installs tmux, copse (`uv tool install copse-agents`) and Claude
+Code, and runs `copse ci run --issue <number>`. It won't overwrite an existing
+file without `--force`. The workflow needs two secrets, `COPSE_PRO_TOKEN` (an
+org CI token, below) and `ANTHROPIC_API_KEY`, and the repo's Actions settings
+must allow GitHub Actions to create pull requests.
+
+An org admin creates the CI token; it is shown once, so store it straight away:
+
+```sh
+copse account org ci-token create "acme/api actions" --org org_...   # prints cpc_... once
+gh secret set COPSE_PRO_TOKEN                                         # paste it
+copse account org ci-token list --org org_...                         # names, status, last used; never the secret
+copse account org ci-token revoke ct_... --org org_...                # CI stops at its next run
+```
+
+On every run `copse ci run` presents the token to the backend, which checks
+it and the org's live plan and returns a signed entitlement; copse verifies it
+in memory and writes nothing to disk. The token doesn't rotate, so one secret
+keeps working until it is revoked or the org's plan no longer includes CI. A
+refresh token from `copse account login` won't do: it rotates on use.
+
+Two things to know before you add the label to your repo:
+
+- **Who can apply the label.** The issue body steers an unattended agent that
+  can push to the repo (`contents: write`). Only people you trust with write
+  access should be able to apply the trigger label; on a public repo, anyone
+  who can write the issue text is choosing what the agent is told to do.
+- **CI on the pull request.** A PR opened with the workflow's own
+  `GITHUB_TOKEN` doesn't trigger the repo's other workflows. If you want your
+  checks to run on copse's PRs, set `GH_TOKEN` to a GitHub App installation
+  token or a personal access token instead.
 
 **Closing and cleaning up.** Press `x` on an agent in the sidebar (twice for one
 that's still running) or run `copse close <id>` to stop it and hide it. Stopping means

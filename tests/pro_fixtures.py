@@ -106,6 +106,7 @@ class FakeBackend(FakeTransport):
             "POST /token/refresh": self._refresh, "GET /entitlement": self._entitlement,
             "GET /me": self._me, "POST /billing/checkout": self._checkout,
             "POST /billing/portal": self._portal, "POST /token/revoke": self._revoke,
+            "POST /ci/entitlement": self._ci_entitlement,
         })
         self.key, self.delay, self.plan = signing_key, delay, plan
         self.n = 0
@@ -116,6 +117,8 @@ class FakeBackend(FakeTransport):
         self.org_keys: dict[str, tuple[str, bytes]] = {}   # org_id -> (key_id, key)
         self.key_fetches: list[str] = []
         self.key_status: tuple[int, dict] | None = None     # force an error answer
+        self.ci_tokens: dict[str, str] = {}                  # cpc_ token -> active|revoked
+        self.ci_features = ["learning", "services", "team", "ci"]
 
     def org_key(self, org_id):
         if org_id not in self.org_keys:
@@ -144,6 +147,24 @@ class FakeBackend(FakeTransport):
             self.access_tokens.add(a)
             self.refresh_tokens[r] = "active"
         return {"access_token": a, "token_type": "Bearer", "expires_in": 900, "refresh_token": r}
+
+    def issue_ci_token(self):
+        """An org CI token: never rotates, works until revoked."""
+        with self.state:
+            self.n += 1
+            tok = f"cpc_{self.n:043d}"
+            self.ci_tokens[tok] = "active"
+        return tok
+
+    def _ci_entitlement(self, form, headers):
+        assert not form, "the CI token goes in the Authorization header, not the body"
+        tok = headers.get("Authorization", "").removeprefix("Bearer ")
+        if self.ci_tokens.get(tok) != "active":
+            return 401, {"error": "invalid_token"}
+        ent = sign(self.key, claims(sub="ci:ct_1", org_id="org_team", plan="team", role="member",
+                                    features=self.ci_features))
+        return 200, {"entitlement": ent, "org_id": "org_team", "token_id": "ct_1", "plan": "team",
+                     "features": self.ci_features, "expires_at": int(time.time()) + 3600}
 
     def _refresh(self, form, headers):
         assert form.get("client_id") == "copse-cli" and form.get("grant_type") == "refresh_token"

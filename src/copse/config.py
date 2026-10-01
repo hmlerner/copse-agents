@@ -80,6 +80,9 @@ class RepoConfig:
     # already fast). 0 disables the pool.
     pool_size: int | None = None
     add_dirs: list[str] = field(default_factory=list)
+    # Per-worktree Docker services (copse Pro): [{"name", "preset"?, "image"?, "port"?, "env"?}]
+    # -- see copse.services.
+    services: list[dict] = field(default_factory=list)
     # Start Ollama in the background when a native profile points at it on
     # this machine and it isn't running (see copse.native.serve).
     local_models: bool = True
@@ -90,6 +93,8 @@ class RepoConfig:
     # unset: the only one installed, if exactly one (see copse.plugins).
     plugins: dict[str, str] = field(default_factory=dict)
     message_delivery: str = "pull"     # agent messages to an interactive supervisor: "pull" (a notice, then read_messages) or "push" (the text itself)
+    # Air-gap mode (copse Enterprise; see copse.airgap): no outbound traffic, local models only.
+    airgap: bool = False
     # Weight routing: task weight -> profiles to try, in order (see autopilot.choose_profile).
     routing: dict[str, list[str]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_ROUTING.items()})
 
@@ -150,6 +155,9 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
             setattr(cfg, key, local[key])
         elif key in shared:
             setattr(cfg, key, shared[key])
+    services = local["services"] if "services" in local else shared.get("services")
+    if isinstance(services, list):
+        cfg.services = [s for s in services if isinstance(s, dict)]
     for source in (shared, local):  # per group, so a repo can override one and keep the rest
         plugins = source.get("plugins")
         if isinstance(plugins, dict):
@@ -164,6 +172,12 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
                     cfg.routing[tier] = [n for n in names if isinstance(n, str)]
     if cfg.pool_size is None:
         cfg.pool_size = 1 if cfg.setup else 0
+    # Air-gap mode: either file may turn it on, and neither may turn it off.
+    cfg.airgap = bool(shared.get("airgap", False)) or bool(local.get("airgap", False))
+    if cfg.airgap:
+        from copse import airgap
+
+        airgap.arm()
     return cfg
 
 

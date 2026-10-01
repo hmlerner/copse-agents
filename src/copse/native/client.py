@@ -283,6 +283,15 @@ class Client:
         the result, by default the JSON body."""
         data = json.dumps(payload).encode("utf-8")
         last: ClientError | None = None
+        # Defence in depth for air-gap mode: the profile gate at launch is the
+        # first line, this refuses an endpoint that still isn't local (a
+        # base_url overridden after the gate, or a profile wrongly marked local).
+        from copse import airgap
+
+        try:
+            airgap.guard(self.endpoint.url(), "model request")
+        except airgap.AirGapError as e:
+            raise ClientError(str(e)) from None
         for attempt in range(self.endpoint.retries + 1):
             req = urllib.request.Request(self.endpoint.url(), data=data, headers=self._headers(),
                                          method="POST")

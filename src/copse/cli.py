@@ -672,6 +672,77 @@ def account(ctx: typer.Context) -> None:
     raise typer.Exit(account_mod.run(cfg, repo_root, list(ctx.args), echo=typer.echo))
 
 
+# -- copse audit (copse Enterprise: the local tamper-evident audit chain) ---------------------
+
+audit_app = typer.Typer(no_args_is_help=True,
+                        help="copse Enterprise: the local tamper-evident audit log "
+                             "(~/.copse/audit; see `src/copse/pro/audit_chain.py`).")
+app.add_typer(audit_app, name="audit")
+
+
+def _audit_repo(repo: Optional[str]) -> str:
+    """The main repo root for ``--repo`` (default: here), or the path as given."""
+    start = repo or os.getcwd()
+    try:
+        return git.main_repo_root(start)
+    except git.GitError:
+        return os.path.abspath(start)
+
+
+@audit_app.command("verify")
+def audit_verify(
+    repo: Optional[str] = typer.Option(None, "--repo", help="The repo whose log to verify (default: here)."),
+) -> None:
+    """Recompute the chain and check every signature; exit 1 at the first broken record."""
+    from copse.pro import audit_chain
+
+    try:
+        report = audit_chain.verify(_audit_repo(repo))
+    except audit_chain.AuditError as e:
+        typer.echo(f"audit: {e}")
+        raise typer.Exit(2)
+    typer.echo(report.describe())
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+@audit_app.command("export")
+def audit_export(
+    repo: Optional[str] = typer.Option(None, "--repo", help="The repo whose log to export (default: here)."),
+    since: Optional[str] = typer.Option(None, "--since", help="Only records from this ISO 8601 time on."),
+    fmt: str = typer.Option("jsonl", "--format", help="jsonl or csv."),
+) -> None:
+    """Print the audit records (unverified) as JSONL or CSV."""
+    from copse.pro import audit_chain
+
+    start = None
+    if since:
+        try:
+            start = audit_chain.parse_time(since)
+        except ValueError:
+            typer.echo(f"audit: --since wants an ISO 8601 time, not {since!r}")
+            raise typer.Exit(2)
+    try:
+        out = audit_chain.export(_audit_repo(repo), since=start, fmt=fmt)
+    except audit_chain.AuditError as e:
+        typer.echo(f"audit: {e}")
+        raise typer.Exit(2)
+    sys.stdout.write(out)
+    sys.stdout.flush()
+
+
+@audit_app.command("pubkey")
+def audit_pubkey() -> None:
+    """This install's Ed25519 public key (hex), which every audit record is signed with."""
+    from copse.pro import audit_chain
+
+    try:
+        typer.echo(audit_chain.public_key_hex())
+    except audit_chain.AuditError as e:
+        typer.echo(f"audit: {e}")
+        raise typer.Exit(2)
+
+
 @app.command()
 def watch(
     all_repos: bool = typer.Option(False, "--all", help="Every repo, not just this one."),
@@ -845,6 +916,32 @@ def merge_cmd(
     typer.echo(f"✓ merged {ws.branch} into {ws.base_branch} ({target})")
 
 
+@app.command("services")
+def services_cmd(
+    action: str = typer.Argument("ls", help="ls, up or down."),
+    workspace: Optional[str] = typer.Argument(None, help="Workspace (default: the current one)."),
+) -> None:
+    """Per-worktree Docker services (copse Pro): list, start or stop a workspace's."""
+    from copse import services as services_mod
+    from copse.config import load_repo_config
+
+    if action not in ("ls", "up", "down"):
+        _fail("action must be ls, up or down")
+    ws = _ws(DB(), workspace)
+    cfg = load_repo_config(ws.repo_root)
+    if not cfg.services:
+        _fail('no services configured; add a "services" list to .copse/config.json')
+    if action == "up":
+        done = services_mod.up(ws, cfg)
+        typer.echo("started: " + (", ".join(done) or "nothing"))
+    elif action == "down":
+        done = services_mod.down(ws, cfg)
+        typer.echo("stopped: " + (", ".join(done) or "nothing"))
+    else:
+        lines = services_mod.status(ws)
+        typer.echo("\n".join(lines) if lines else f"no services running for {ws.id}")
+
+
 @app.command()
 def rm(
     workspace: str,
@@ -933,6 +1030,56 @@ def mcp() -> None:
     from copse.mcp_server import main
 
     main()
+
+
+# -- copse ci (copse Team) ---------------------------------------------------
+
+ci_app = typer.Typer(no_args_is_help=True,
+                     help="Run copse headless in CI: an issue in, a pull request out (copse Team).")
+app.add_typer(ci_app, name="ci")
+
+
+@ci_app.command("run")
+def ci_run(
+    goal: Optional[str] = typer.Option(None, "--goal", help="The goal, as text (a goals.md-shaped text brings its milestones)."),
+    goal_file: Optional[str] = typer.Option(None, "--goal-file", help="Read the goal from this file (goals.md format or plain text)."),
+    issue: Optional[int] = typer.Option(None, "--issue", help="Take the goal from this GitHub issue (title and body, via gh); the PR closes it."),
+    timeout: float = typer.Option(60, "--timeout", help="Minutes to wait for every milestone to be verified."),
+    max_workers: Optional[int] = typer.Option(None, "--max-workers", help="Cap on workers running at once (sets max_agents in .copse/config.local.json)."),
+    base: Optional[str] = typer.Option(None, "--base", help="Branch to cut the work from and open the PR against (default: the repo's base)."),
+    no_pr: bool = typer.Option(False, "--no-pr", help="Don't push or open a pull request; just report."),
+) -> None:
+    """Run a supervisor with autopilot on, unattended, until the goal is verified; then open a PR.
+
+    The work happens on a fresh `copse/ci-<issue or slug>` branch. Exits 0
+    with the PR URL when every milestone's check passes; otherwise exits 1
+    with what happened (the supervisor's question, a stall, the timeout).
+    Needs the `ci` feature (copse Team); in CI, set COPSE_PRO_TOKEN to an org CI
+    token from `copse account org ci-token create`."""
+    from copse import ci
+
+    raise typer.Exit(ci.run_cli(goal=goal, goal_file=goal_file, issue=issue, timeout_min=timeout,
+                                max_workers=max_workers, base=base, pr=not no_pr, echo=typer.echo))
+
+
+@ci_app.command("init")
+def ci_init(
+    label: str = typer.Option("copse", "--label", help="Issues given this label start a run."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing workflow file."),
+) -> None:
+    """Write .github/workflows/copse.yml: `copse ci run` on labelled issues and on demand."""
+    from copse import ci
+
+    root = _run(git.main_repo_root, os.getcwd())
+    try:
+        path = ci.init(root, label=label, force=force)
+    except ci.CIError as e:
+        _fail(str(e))
+    typer.echo(f"wrote {path}")
+    typer.echo("Add the COPSE_PRO_TOKEN secret (from `copse account org ci-token create`) and "
+               "ANTHROPIC_API_KEY, and allow GitHub Actions to create pull requests in the repo's "
+               "Actions settings. Only people you trust with write access should be able to apply "
+               "the label.")
 
 
 # -- internal ----------------------------------------------------------------

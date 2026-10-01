@@ -545,6 +545,28 @@ def sidebar_follow(db: DB, session: str) -> None:
                        _sidebar_position(root_ws) if root_ws else "left")
 
 
+def _airgap_check(profile, repo_root: str) -> None:
+    """Raise ``AgentError`` for a profile air-gap mode refuses (a hosted
+    provider, or a model endpoint off this machine and the private network).
+    Every launch passes here, so no path -- a worker, a reviewer, a subagent,
+    the chat, a resume -- can start a hosted agent while air-gap mode is on."""
+    from copse import airgap
+    from copse.config import load_repo_config
+
+    try:
+        cfg = load_repo_config(repo_root)
+    except ValueError as e:
+        # A broken config might be the one that says "airgap": true; refuse
+        # rather than guess (fail closed).
+        raise AgentError(f"can't read this repo's copse config, so air-gap mode can't be "
+                         f"ruled out: {e}") from e
+    if not airgap.enabled(cfg):
+        return
+    ok, why = airgap.profile_allowed(profile)
+    if not ok:
+        raise AgentError(f"air-gap mode: profile {profile.name!r} is refused: {why}")
+
+
 def _add_dirs_warning(profile, provider_name: str) -> str | None:
     missing = missing_add_dirs(profile) if provider_name == "claude" else []
     if not missing:
@@ -562,8 +584,11 @@ def add_dirs_warning(agent: Agent, ws: Workspace) -> str | None:
 
 def _launch(db: DB, agent: Agent, ws: Workspace, *, prompt: str | None,
             resume: str | None, watch_pane: bool, background_setup: bool = False) -> None:
-    """Start (or restart) ``agent``'s CLI in a new tmux window of ``ws``."""
+    """Start (or restart) ``agent``'s CLI in a new tmux window of ``ws``.
+    In air-gap mode (``copse.airgap``) only a local profile is launched,
+    whatever the mode: a worker, a reviewer, a subagent or the chat itself."""
     profile = _profile_for(db, agent, ws)
+    _airgap_check(profile, ws.repo_root)
     provider = get_provider(agent.provider)
     if not provider.launches_process:
         # Nothing to start: the caller's own subagent does the work.
@@ -1580,6 +1605,7 @@ def request_review(db: DB, caller: Agent | None, ws: Workspace, profile: str | N
         chosen = load_profile(profile, ws.repo_root)
     except KeyError as e:
         raise AgentError(str(e)) from e
+    _airgap_check(chosen, ws.repo_root)   # before any of the branch is read for the brief
     if chosen.provider == "codex" and not shutil.which("codex"):
         raise AgentError(
             f"reviewer profile {profile!r} uses the codex provider, but codex isn't on PATH; "

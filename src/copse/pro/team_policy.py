@@ -10,7 +10,9 @@ policy on delegations and merges.
   good copy is used; if there has never been one, everything is denied with
   a message saying how to fix it.
 * ``check_assign`` denies a provider or model outside the allowed lists (and
-  an undeclared one when a list is set). ``check_merge`` denies a merge that
+  an undeclared one when a list is set), and a new worker once the repo
+  already has ``max_parallel_workers`` at work (or when copse couldn't
+  count them). ``check_merge`` denies a merge that
   wasn't asked for by the user (the pipeline's auto-merge, a supervisor or
   any other agent) when ``require_human_review`` is set.
 
@@ -133,9 +135,37 @@ def fetch_policy(org_id: str, client=None, store=None) -> OrgPolicy:
     return p
 
 
-def current_policy(ent, client=None, store=None) -> OrgPolicy:
+def load_offline(repo_root: str | None, org_id: str) -> OrgPolicy:
+    """The offline policy file (``.copse/policy.json``, the org policy's
+    schema) for air-gap mode; raises :class:`PolicyUnavailable` when it is
+    missing, unreadable, malformed or for another org."""
+    from copse import airgap
+
+    path = airgap.policy_path(repo_root)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        raise PolicyUnavailable(f"no offline policy file at {path}") from None
+    except OSError as e:
+        raise PolicyUnavailable(f"cannot read {path}: {e}") from e
+    if len(raw) > MAX_CACHE:
+        raise PolicyUnavailable(f"{path} is too large")
+    try:
+        body = json.loads(raw)
+    except ValueError as e:
+        raise PolicyUnavailable(f"{path} is not valid JSON") from e
+    return parse_policy(org_id, body, time.time())
+
+
+def current_policy(ent, client=None, store=None, repo_root: str | None = None) -> OrgPolicy:
     """The policy for ``ent``'s org at (at least) ``ent.policy_version``, else
-    the last good copy; raises :class:`PolicyUnavailable` if there is none."""
+    the last good copy; raises :class:`PolicyUnavailable` if there is none.
+    In air-gap mode, the offline policy file (:func:`load_offline`) and
+    nothing else: nothing is fetched and the cache is not consulted."""
+    from copse import airgap
+
+    if airgap.enabled():
+        return load_offline(repo_root, ent.org_id)
     cached = load_cached(ent.org_id)
     if cached is not None and cached.version >= ent.policy_version:
         return cached
@@ -175,9 +205,15 @@ class ProPolicy(PolicyPlugin):
         ent = self._team_entitlement()
         if ent is None:
             return allow()
+        from copse import airgap
+
         try:
-            return current_policy(ent, self._client, self._store)
+            return current_policy(ent, self._client, self._store, self.repo_root)
         except PolicyUnavailable as e:
+            if airgap.enabled():
+                return deny(f"air-gap mode: no usable offline team policy for org {ent.org_id} "
+                            f"({e}); put the org's policy (the schema `copse account org policy` "
+                            f"shows, as JSON) at .copse/{airgap.POLICY_FILE}")
             return deny(f"copse Pro team policy for org {ent.org_id} has never been fetched "
                         f"({e}); connect to the network and run `copse account org policy`")
 
@@ -194,6 +230,11 @@ class ProPolicy(PolicyPlugin):
             got = f"model {info.model!r}" if info.model else "no declared model"
             return deny(f"{who} uses {got}; org {p.org_id} allows only "
                         f"{', '.join(p.allowed_models) or 'no models'} (set `model` in the profile)")
+        cap = p.max_parallel_workers
+        if cap is not None and (info.running_workers is None or info.running_workers >= cap):
+            now = "an unknown number" if info.running_workers is None else str(info.running_workers)
+            return deny(f"org {p.org_id} allows at most {cap} parallel worker(s) per repo and "
+                        f"{now} are at work; wait for one to finish (or cancel one) and try again")
         return allow()
 
     def check_merge(self, info: MergeInfo) -> Decision:

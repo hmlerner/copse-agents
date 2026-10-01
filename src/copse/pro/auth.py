@@ -19,6 +19,9 @@ Transport rules (``UrllibTransport``):
 * Every request has a timeout; responses larger than ``MAX_RESPONSE`` are
   refused; only 307/308 redirects to the same scheme, host and port are
   followed.
+* In air-gap mode (:mod:`copse.airgap`) nothing is sent at all:
+  ``Client.call`` raises :class:`AirGapped` before the transport sees the
+  request.
 
 Base URL: ``COPSE_PRO_BASE_URL`` or ``DEFAULT_BASE_URL``. Tokens are never
 logged, and server error text is sanitized before it is shown.
@@ -41,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from copse import airgap
 from copse.pro import license
 
 log = logging.getLogger(__name__)
@@ -71,8 +75,16 @@ class AuthError(Exception):
 class TransportError(AuthError):
     """The backend couldn't be reached (network, TLS, timeout, bad response)."""
 
+    def __init__(self, message: str, code: str = "transport") -> None:
+        super().__init__(message, code=code)
+
+
+class AirGapped(TransportError):
+    """The request was refused before it left the machine: air-gap mode is
+    on (``copse.airgap``). Handled like being offline, with code ``airgap``."""
+
     def __init__(self, message: str) -> None:
-        super().__init__(message, code="transport")
+        super().__init__(message, code="airgap")
 
 
 def _sanitize(text, limit: int = 200) -> str:
@@ -203,6 +215,10 @@ class Client:
              token: str | None = None) -> tuple[int, dict]:
         url = self.base + path
         check_url(url)
+        try:
+            airgap.guard(url, f"copse Pro {method} {path.split('?', 1)[0]}")
+        except airgap.AirGapError as e:
+            raise AirGapped(str(e)) from None
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         return self.transport.request(method, url, form, headers)
 
@@ -555,8 +571,8 @@ def me(client: Client, store) -> dict:
             if k in body}
 
 
-def _billing_url(client: Client, store, path: str) -> str:
-    status, body = authed(client, store, "POST", path, {})
+def _billing_url(client: Client, store, path: str, body: dict | None = None) -> str:
+    status, body = authed(client, store, "POST", path, JSONBody(body) if body else {})
     if status != 200:
         raise _error(status, body)
     url = body.get("url")
@@ -565,11 +581,83 @@ def _billing_url(client: Client, store, path: str) -> str:
     return _sanitize(url, 2048)
 
 
-def checkout_url(client: Client, store) -> str:
-    """A Stripe checkout URL for upgrading (``POST /billing/checkout``)."""
-    return _billing_url(client, store, "/billing/checkout")
+def checkout_url(client: Client, store, *, plan: str = "pro", seats: int | None = None,
+                 org_id: str | None = None) -> str:
+    """A Stripe checkout URL for upgrading (``POST /billing/checkout``): Pro
+    for your personal org by default, or Team with ``seats`` for a team org
+    you administer."""
+    body = {"plan": plan, "seats": seats, "org_id": org_id} if plan != "pro" or org_id else {}
+    return _billing_url(client, store, "/billing/checkout", {k: v for k, v in body.items() if v is not None})
 
 
-def portal_url(client: Client, store) -> str:
-    """The billing portal URL (``POST /billing/portal``)."""
-    return _billing_url(client, store, "/billing/portal")
+def portal_url(client: Client, store, org_id: str | None = None) -> str:
+    """The billing portal URL (``POST /billing/portal``), for ``org_id`` if given."""
+    path = "/billing/portal" + (f"?org_id={urllib.parse.quote(org_id, safe='')}" if org_id else "")
+    return _billing_url(client, store, path)
+
+
+def create_org(client: Client, store, name: str) -> dict:
+    """Create a team org you own (``POST /orgs``); it has no plan until checkout."""
+    status, body = authed(client, store, "POST", "/orgs", JSONBody({"name": name}))
+    if status != 200:
+        raise _error(status, body)
+    return {k: _sanitize(body.get(k, ""), 64) for k in ("org_id", "name", "role")}
+
+
+def create_invite(client: Client, store, org_id: str, email: str, role: str = "member") -> dict:
+    """Invite ``email`` to ``org_id`` (``POST /orgs/{org_id}/invites``, admin+)."""
+    status, body = authed(client, store, "POST", f"/orgs/{urllib.parse.quote(org_id, safe='')}/invites",
+                          JSONBody({"email": email, "role": role}))
+    if status != 200:
+        raise _error(status, body)
+    return {k: _sanitize(body.get(k, ""), 320) for k in ("invite_code", "org_id", "email", "role")}
+
+
+def accept_invite(client: Client, store, code: str) -> dict:
+    """Join the org an invite code is for (``POST /invites/accept``)."""
+    status, body = authed(client, store, "POST", "/invites/accept", JSONBody({"invite_code": code}))
+    if status != 200:
+        raise _error(status, body)
+    return {k: _sanitize(body.get(k, ""), 64) for k in ("org_id", "role")}
+
+
+def _ci_tokens_path(org_id: str) -> str:
+    return f"/orgs/{urllib.parse.quote(org_id, safe='')}/ci-tokens"
+
+
+def create_ci_token(client: Client, store, org_id: str, name: str) -> dict:
+    """Create an org CI token (``POST /orgs/{org_id}/ci-tokens``, admin+, a plan
+    with ``ci``). The token is in the answer once; the backend keeps only its hash."""
+    status, body = authed(client, store, "POST", _ci_tokens_path(org_id), JSONBody({"name": name}))
+    if status != 200:
+        raise _error(status, body)
+    token = body.get("token")
+    if not isinstance(token, str) or not re.fullmatch(r"cpc_[A-Za-z0-9_-]{20,200}", token):
+        raise AuthError("backend returned no CI token", code="bad_response")
+    out = {k: _sanitize(body.get(k, ""), 100) for k in ("token_id", "org_id", "name")}
+    out["token"] = token
+    return out
+
+
+def list_ci_tokens(client: Client, store, org_id: str) -> list[dict]:
+    """The org's CI tokens without their secrets (``GET /orgs/{org_id}/ci-tokens``, admin+)."""
+    status, body = authed(client, store, "GET", _ci_tokens_path(org_id))
+    if status != 200:
+        raise _error(status, body)
+    out = []
+    for t in body.get("tokens") if isinstance(body.get("tokens"), list) else []:
+        if isinstance(t, dict):
+            row = {k: _sanitize(t.get(k) or "", 100) for k in ("token_id", "name", "created_by", "status")}
+            row.update({k: t.get(k) if isinstance(t.get(k), int) else None
+                        for k in ("created_at", "last_used_at")})
+            out.append(row)
+    return out
+
+
+def revoke_ci_token(client: Client, store, org_id: str, token_id: str) -> None:
+    """Revoke a CI token (``DELETE /orgs/{org_id}/ci-tokens/{token_id}``, admin+)."""
+    if not re.fullmatch(r"ct_[0-9a-f]{32}", token_id):
+        raise AuthError("invalid CI token id (expected ct_ and 32 hex digits)", code="bad_request")
+    status, body = authed(client, store, "DELETE", f"{_ci_tokens_path(org_id)}/{token_id}")
+    if status != 200:
+        raise _error(status, body)

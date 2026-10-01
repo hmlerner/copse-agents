@@ -14,11 +14,41 @@ USAGE = """usage: copse account <command> [--base-url URL]
   login     log in to copse Pro in your browser (device code)
   logout    revoke this device's session and forget its credentials
   status    show your account, plan, features and when the entitlement expires
-  upgrade   print the checkout URL for upgrading your plan
-  portal    print the billing portal URL (invoices, seats, cancellation)
+  upgrade   print the checkout URL for copse Pro (your personal org)
+  upgrade --team --seats N [--org ORG]
+            print the checkout URL for copse Team on a team org you administer
+            (default: the current org)
+  portal [--org ORG]  print the billing portal URL (invoices, seats, cancellation)
   org list          list the orgs you belong to
+  org create <name> create a team org you own (then `upgrade --team`)
+  org invite <email> [--admin]  invite someone to the current org; prints the code
+  org join <code>   accept an invite code and join that org
   org use <org_id>  work as a member of <org_id> (`personal` for your own)
-  org policy        show the current org's policy (and refresh the cached copy)"""
+  org policy        show the current org's policy (and refresh the cached copy)
+  org ci-token create <name> [--org ORG]
+                    create a CI token for `copse ci run` (admin+); shown once
+  org ci-token list [--org ORG]           list the org's CI tokens
+  org ci-token revoke <token_id> [--org ORG]  revoke a CI token
+  license install <file>  install an offline (copse Enterprise) license; verified with the
+                    pinned keys, no network; used in air-gap mode and when not logged in
+  license status    show the installed offline license and the air-gap status
+  license remove    remove the installed offline license"""
+
+
+def _take(args: list[str], flag: str, value: bool = True):
+    """Remove ``flag`` (and its value) from ``args``; return the value, True
+    for a bare flag, or None if absent. Raises ValueError if the value is missing."""
+    if flag not in args:
+        return None
+    i = args.index(flag)
+    if not value:
+        del args[i]
+        return True
+    if i + 1 >= len(args) or args[i + 1].startswith("--"):
+        raise ValueError(flag)
+    v = args[i + 1]
+    del args[i:i + 2]
+    return v
 
 
 def _when(ts: int | None) -> str:
@@ -61,6 +91,69 @@ class _OrgCommands:
                 creds.get("base_url")), grace=license.MAX_GRACE).org_id
         except (license.LicenseError, auth.AuthError):
             return None
+
+    def _team_org(self, org: str | None) -> str:
+        """The team org a command acts on: ``org`` or the current one."""
+        org = org or (self.store.load() or {}).get("org_id")
+        if not org:
+            raise auth.AuthError("no team org selected: pass --org ORG or run "
+                                 "`copse account org use <org_id>` (see `copse account org list`)",
+                                 code="no_team_org")
+        if not auth.ORG_ID_RE.match(org):
+            raise auth.AuthError("invalid org id", code="bad_request")
+        return org
+
+    def cmd_org_create(self, base: str | None, *name_words: str) -> int:
+        name = " ".join(name_words).strip()
+        if not name or len(name) > 100:
+            raise auth.AuthError("org name must be 1-100 characters", code="bad_request")
+        org = auth.create_org(self._client(base), self.store, name)
+        self._say(f"Created team org {org['org_id']} ({org['name']}); you are its owner.")
+        self._say(f"Next: copse account upgrade --team --seats N --org {org['org_id']}")
+        return 0
+
+    def cmd_org_invite(self, base: str | None, email: str, org: str | None = None,
+                       admin: bool = False) -> int:
+        org_id = self._team_org(org)
+        inv = auth.create_invite(self._client(base), self.store, org_id, email,
+                                 "admin" if admin else "member")
+        self._say(f"Invited {inv['email']} to {inv['org_id']} as {inv['role']}.")
+        self._say(f"Send them this command (the code is shown once): "
+                  f"copse account org join {inv['invite_code']}")
+        return 0
+
+    def cmd_org_join(self, base: str | None, code: str) -> int:
+        got = auth.accept_invite(self._client(base), self.store, code.strip())
+        self._say(f"Joined {got['org_id']} as {got['role']}. "
+                  f"Run `copse account org use {got['org_id']}` to work as a member.")
+        return 0
+
+    def cmd_org_ci_token(self, base: str | None, action: str, *rest: str, org: str | None = None) -> int:
+        org_id = self._team_org(org)
+        client = self._client(base)
+        if action == "create":
+            name = " ".join(rest).strip()
+            if not name or len(name) > 100:
+                raise auth.AuthError("CI token name must be 1-100 characters", code="bad_request")
+            got = auth.create_ci_token(client, self.store, org_id, name)
+            self._say(f"Created CI token {got['token_id']} ({got['name']}) for {got['org_id']}.")
+            self._say("Store it as the COPSE_PRO_TOKEN repository secret (it is shown once):")
+            self._say(f"  {got['token']}")
+            self._say("  e.g. gh secret set COPSE_PRO_TOKEN   (then paste it)")
+            return 0
+        if action == "list":
+            tokens = auth.list_ci_tokens(client, self.store, org_id)
+            if not tokens:
+                self._say(f"Org {org_id} has no CI tokens.")
+                return 0
+            for t in tokens:
+                self._say(f"{t['token_id']:<36} {t['name'][:32]:<32} {t['status']:<8} "
+                          f"created {_when(t['created_at'])} by {t['created_by']}, "
+                          f"last used {_when(t['last_used_at'])}")
+            return 0
+        auth.revoke_ci_token(client, self.store, org_id, rest[0])
+        self._say(f"Revoked CI token {rest[0]}; runs using it stop at their next start.")
+        return 0
 
     def cmd_org_use(self, base: str | None, org_id: str) -> int:
         target = None if org_id == "personal" else org_id
@@ -132,17 +225,53 @@ class ProAccount(_OrgCommands):
         if args and args[0] in ("-h", "--help"):
             print(USAGE, file=self.out)
             return 0
-        ok = (len(args) == 1 and args[0] in ("login", "logout", "status", "upgrade", "portal")) or \
-            (args[:1] == ["org"] and (args[1:] in (["list"], ["policy"], [])
-                                      or (len(args) == 3 and args[1] == "use")))
-        if not ok:
+        try:
+            opts = {"team": _take(args, "--team", value=False), "seats": _take(args, "--seats"),
+                    "org": _take(args, "--org"), "admin": _take(args, "--admin", value=False)}
+            seats = int(opts["seats"]) if opts["seats"] is not None else None
+        except ValueError:
+            print(USAGE, file=self.err)
+            return 2
+        cmd, rest = (args[0] if args else None), args[1:]
+        sub = None
+        if cmd == "org":
+            sub = rest[0] if rest else "list"
+        elif cmd == "license":
+            sub = rest[0] if rest else "status"
+        ok = {
+            "login": not rest, "logout": not rest, "status": not rest,
+            "upgrade": not rest and (bool(opts["team"]) == (seats is not None)) and (seats or 1) >= 1
+            and (opts["org"] is None or bool(opts["team"])),
+            "portal": not rest,
+            "org": (sub in ("list", "policy") and len(rest) <= 1)
+            or (sub in ("use", "invite", "join") and len(rest) == 2)
+            or (sub == "create" and len(rest) >= 2)
+            or (sub == "ci-token" and len(rest) >= 2 and (
+                (rest[1] == "create" and len(rest) >= 3) or (rest[1] == "list" and len(rest) == 2)
+                or (rest[1] == "revoke" and len(rest) == 3))),
+            "license": (sub in ("status", "remove") and len(rest) <= 1)
+            or (sub == "install" and len(rest) == 2),
+        }.get(cmd, False)
+        flags_ok = {"upgrade": ("team", "seats", "org"), "portal": ("org",),
+                    "org": ("org", "admin") if sub == "invite"
+                    else ("org",) if sub == "ci-token" else ()}.get(cmd, ())
+        if not ok or any(v is not None and k not in flags_ok for k, v in opts.items()):
             print(USAGE, file=self.err)
             return 2
         try:
-            if args[0] == "org":
-                sub = args[1] if len(args) > 1 else "list"
-                return getattr(self, "cmd_org_" + sub)(base, *args[2:])
-            return getattr(self, "cmd_" + args[0])(base)
+            if cmd == "license":
+                return getattr(self, "cmd_license_" + sub)(base, *rest[1:])
+            if cmd == "org":
+                if sub == "invite":
+                    return self.cmd_org_invite(base, rest[1], opts["org"], bool(opts["admin"]))
+                if sub == "ci-token":
+                    return self.cmd_org_ci_token(base, *rest[1:], org=opts["org"])
+                return getattr(self, "cmd_org_" + sub)(base, *rest[1:])
+            if cmd == "upgrade":
+                return self.cmd_upgrade(base, team=bool(opts["team"]), seats=seats, org=opts["org"])
+            if cmd == "portal":
+                return self.cmd_portal(base, org=opts["org"])
+            return getattr(self, "cmd_" + cmd)(base)
         except (auth.AuthError, license.LicenseError, credentials.CredentialError) as e:
             print(f"copse account: {e}", file=self.err)
             return 1
@@ -173,7 +302,9 @@ class ProAccount(_OrgCommands):
             who = auth.me(client, self.store)
         except auth.AuthError as e:
             who = {}
-            if e.code == "transport":
+            if e.code == "airgap":
+                self._say("(air-gap mode: showing the offline license)")
+            elif e.code == "transport":
                 self._say("(offline: showing the stored entitlement)")
             else:
                 self._say(f"(could not load account details: {e.code})")
@@ -196,14 +327,84 @@ class ProAccount(_OrgCommands):
             left = max(0, int((ent.grace_until or now) - now)) // 3600
             self._say(f"  grace     until {_when(ent.grace_until)} (~{left} h); "
                       "reconnect to refresh")
+        self._airgap_lines()
         return 0
 
-    def cmd_upgrade(self, base: str | None) -> int:
-        self._say(auth.checkout_url(self._client(base), self.store))
+    # -- the offline license ----------------------------------------------------------------
+
+    def _airgap_lines(self) -> None:
+        from copse import airgap
+
+        if not airgap.enabled():
+            return
+        self._say(f"  air-gap   on ({airgap.source()}): no outbound traffic, local models only")
+        warning = airgap.warning()
+        if warning:
+            self._say(f"            ! {warning}")
+
+    def cmd_license_install(self, base: str | None, path: str) -> int:
+        from pathlib import Path
+
+        try:
+            data = Path(path).read_bytes()
+        except OSError as e:
+            raise license.LicenseError(f"cannot read {path}: {e.strerror or e}") from e
+        if len(data) > license.MAX_LICENSE_FILE:
+            raise license.LicenseError(f"{path} is too large to be a license file")
+        ent = license.install(data)
+        self._say(f"Installed offline license for org {ent.org_id} (plan {ent.plan}, "
+                  f"{ent.seats} seat(s)); expires {_when(ent.exp)}.")
+        self._say(f"  features  {', '.join(sorted(ent.features)) or '-'}")
+        from copse import airgap
+
+        if airgap.FEATURE in ent.features:
+            self._say('  air-gap mode is included: turn it on with "airgap": true in '
+                      f".copse/config.json or {airgap.ENV}=1")
+        else:
+            self._say(f"  this license doesn't include air-gap mode ({airgap.FEATURE!r})")
         return 0
 
-    def cmd_portal(self, base: str | None) -> int:
-        self._say(auth.portal_url(self._client(base), self.store))
+    def cmd_license_status(self, base: str | None) -> int:
+        try:
+            ent = license.installed()
+        except license.LicenseError as e:
+            self._say(f"offline license: {e}")
+            self._airgap_lines()
+            return 1
+        if ent is None:
+            self._say("No offline license installed (`copse account license install <file>`).")
+            self._airgap_lines()
+            return 1
+        state = "offline grace" if ent.in_grace else ent.status
+        self._say(f"offline license: {state}")
+        self._say(f"  org       {ent.org_id}")
+        self._say(f"  plan      {ent.plan} ({ent.seats} seat(s))")
+        self._say(f"  features  {', '.join(sorted(ent.features)) or '-'}")
+        self._say(f"  expires   {_when(ent.exp)}")
+        if ent.in_grace:
+            self._say(f"  grace     until {_when(ent.grace_until)}; install a renewed license")
+        self._airgap_lines()
+        return 0
+
+    def cmd_license_remove(self, base: str | None) -> int:
+        self._say("Removed the offline license." if license.uninstall()
+                  else "No offline license was installed.")
+        return 0
+
+    def cmd_upgrade(self, base: str | None, team: bool = False, seats: int | None = None,
+                    org: str | None = None) -> int:
+        if not team:
+            self._say(auth.checkout_url(self._client(base), self.store))
+            return 0
+        self._say(auth.checkout_url(self._client(base), self.store, plan="team", seats=seats,
+                                    org_id=self._team_org(org)))
+        return 0
+
+    def cmd_portal(self, base: str | None, org: str | None = None) -> int:
+        if org is not None and not auth.ORG_ID_RE.match(org):
+            raise auth.AuthError("invalid org id", code="bad_request")
+        org = org or (self.store.load() or {}).get("org_id")
+        self._say(auth.portal_url(self._client(base), self.store, org))
         return 0
 
 
