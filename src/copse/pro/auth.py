@@ -1,10 +1,12 @@
-"""The copse Pro backend client: device-flow login (RFC 8628), refresh-token
-rotation, entitlements, account info and billing links.
+"""The copse Pro backend client: browser login (loopback redirect + PKCE,
+RFC 8252/7636, :mod:`copse.pro.loopback`) with device-flow login (RFC 8628)
+as the fallback, refresh-token rotation, entitlements, account info and
+billing links.
 
 Backend contract (``/api/copse/v1``): OAuth calls are form-encoded POSTs that
-all carry ``client_id=copse-cli``; ``/device/token`` and ``/token/refresh``
-return a 15-minute access token (opaque here, sent as Bearer) and a refresh
-token that is rotated on every use. ``GET /entitlement`` (Bearer) returns
+all carry ``client_id=copse-cli``; ``/cli/token``, ``/device/token`` and
+``/token/refresh`` return a 15-minute access token (opaque here, sent as
+Bearer) and a refresh token that is rotated on every use. ``GET /entitlement`` (Bearer) returns
 the signed entitlement that :mod:`copse.pro.license` verifies. Presenting a
 refresh token twice is treated by the backend as theft and revokes the
 whole session, so rotation is serialized across processes with a file lock
@@ -45,13 +47,15 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from copse import airgap
-from copse.pro import license
+from copse.pro import license, loopback
 
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://pawdelta.com/api/copse/v1"
 CLIENT_ID = "copse-cli"
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+CODE_GRANT = "authorization_code"
+BROWSER_TIMEOUT = loopback.TIMEOUT     # wait this long for the browser to redirect back
 SLOW_DOWN_STEP = 5
 TIMEOUT = 15.0
 MAX_RESPONSE = 256 * 1024
@@ -358,14 +362,80 @@ def _fetch_entitlement(client: Client, access: str, now: float, org_id: str | No
     return tok, ent
 
 
+# -- browser flow -----------------------------------------------------------------------------------
+
+
+def exchange_code(client: Client, code: str, verifier: str, redirect_uri: str, *,
+                  clock: Callable[[], float] | None = None) -> dict:
+    """Trade the authorization code from the browser redirect for tokens
+    (``POST /cli/token``, proving possession of the PKCE verifier)."""
+    status, body = client.post("/cli/token", {
+        "grant_type": CODE_GRANT, "code": code, "code_verifier": verifier,
+        "redirect_uri": redirect_uri, "client_id": CLIENT_ID})
+    if status != 200:
+        err = _error(status, body)
+        if err.code == "invalid_grant":
+            raise AuthError("the browser sign-in was refused; run login again", code="invalid_grant")
+        raise err
+    return _token_set(body, (clock or time.time)())
+
+
+def browser_login(client: Client, *, show: Callable[[str], None] = print,
+                  open_url: Callable[[str], bool] | None = None,
+                  timeout: float = BROWSER_TIMEOUT,
+                  clock: Callable[[], float] | None = None) -> dict | None:
+    """Sign in through the browser: a loopback redirect with PKCE. Returns the
+    token set, or None (after saying why) when the browser flow couldn't run
+    (no listener, no browser, no redirect within ``timeout``) and the caller
+    should fall back to the device flow. A denied sign-in raises."""
+    open_url = open_url or loopback.open_browser
+    verifier, challenge = loopback.pkce_pair()
+    state = loopback.new_state()
+    try:
+        server = loopback.CallbackServer(state)
+    except OSError as e:
+        show(f"Couldn't listen for the browser sign-in ({_sanitize(e)}); using a device code instead.")
+        return None
+    with server:
+        url = loopback.authorize_url(client.base, server.redirect_uri, state, challenge, CLIENT_ID)
+        show("Opening your browser to sign in to copse Pro...")
+        try:
+            opened = bool(open_url(url))
+        except Exception:  # noqa: BLE001 - whatever the browser launcher did, fall back
+            opened = False
+        if not opened:
+            show("Couldn't open a browser; using a device code instead.")
+            return None
+        show(f"If your browser didn't open, visit: {url}")
+        result = server.wait(timeout)
+    if result is None:
+        show("The browser didn't sign in within the time limit; using a device code instead.")
+        return None
+    if result.error is not None:
+        if result.error == "access_denied":
+            raise AuthError("login was denied", code="access_denied")
+        raise _error(400, {"error": result.error, "error_description": result.description})
+    return exchange_code(client, result.code, verifier, server.redirect_uri, clock=clock)
+
+
 def login(client: Client, store, *, show: Callable[[str], None] = print,
           sleep: Callable[[float], None] | None = None,
-          clock: Callable[[], float] | None = None) -> license.Entitlement:
+          clock: Callable[[], float] | None = None, browser: bool = False,
+          open_url: Callable[[str], bool] | None = None,
+          browser_timeout: float = BROWSER_TIMEOUT) -> license.Entitlement:
+    """Log in and store credentials and the entitlement. With ``browser``
+    the loopback+PKCE flow is tried first (see :func:`browser_login`) and
+    the device flow is the fallback; otherwise the device flow is used."""
     clock = clock or time.time
-    auth = start_device_flow(client)
-    show(f"To log in to copse Pro, open {auth.verification_uri}\n"
-         f"and enter the code: {auth.user_code}")
-    creds = poll_device_token(client, auth, sleep=sleep, clock=clock)
+    creds = None
+    if browser:
+        creds = browser_login(client, show=show, open_url=open_url, timeout=browser_timeout,
+                              clock=clock)
+    if creds is None:
+        auth = start_device_flow(client)
+        show(f"To log in to copse Pro, open {auth.verification_uri}\n"
+             f"and enter the code: {auth.user_code}")
+        creds = poll_device_token(client, auth, sleep=sleep, clock=clock)
     creds["base_url"] = client.base
     with refresh_lock():
         store.save(creds)     # keep the refresh token before anything else can fail
