@@ -25,6 +25,10 @@ USAGE = """usage: copse account <command> [--base-url URL]
   org join <code>   accept an invite code and join that org
   org use <org_id>  work as a member of <org_id> (`personal` for your own)
   org policy        show the current org's policy (and refresh the cached copy)
+  org ci-token create <name> [--org ORG]
+                    create a CI token for `copse ci run` (admin+); shown once
+  org ci-token list [--org ORG]           list the org's CI tokens
+  org ci-token revoke <token_id> [--org ORG]  revoke a CI token
   license install <file>  install an offline (copse Enterprise) license; verified with the
                     pinned keys, no network; used in air-gap mode and when not logged in
   license status    show the installed offline license and the air-gap status
@@ -124,6 +128,33 @@ class _OrgCommands:
                   f"Run `copse account org use {got['org_id']}` to work as a member.")
         return 0
 
+    def cmd_org_ci_token(self, base: str | None, action: str, *rest: str, org: str | None = None) -> int:
+        org_id = self._team_org(org)
+        client = self._client(base)
+        if action == "create":
+            name = " ".join(rest).strip()
+            if not name or len(name) > 100:
+                raise auth.AuthError("CI token name must be 1-100 characters", code="bad_request")
+            got = auth.create_ci_token(client, self.store, org_id, name)
+            self._say(f"Created CI token {got['token_id']} ({got['name']}) for {got['org_id']}.")
+            self._say("Store it as the COPSE_PRO_TOKEN repository secret (it is shown once):")
+            self._say(f"  {got['token']}")
+            self._say("  e.g. gh secret set COPSE_PRO_TOKEN   (then paste it)")
+            return 0
+        if action == "list":
+            tokens = auth.list_ci_tokens(client, self.store, org_id)
+            if not tokens:
+                self._say(f"Org {org_id} has no CI tokens.")
+                return 0
+            for t in tokens:
+                self._say(f"{t['token_id']:<36} {t['name'][:32]:<32} {t['status']:<8} "
+                          f"created {_when(t['created_at'])} by {t['created_by']}, "
+                          f"last used {_when(t['last_used_at'])}")
+            return 0
+        auth.revoke_ci_token(client, self.store, org_id, rest[0])
+        self._say(f"Revoked CI token {rest[0]}; runs using it stop at their next start.")
+        return 0
+
     def cmd_org_use(self, base: str | None, org_id: str) -> int:
         target = None if org_id == "personal" else org_id
         ent = auth.switch_org(self._client(base), self.store, target)
@@ -214,12 +245,16 @@ class ProAccount(_OrgCommands):
             "portal": not rest,
             "org": (sub in ("list", "policy") and len(rest) <= 1)
             or (sub in ("use", "invite", "join") and len(rest) == 2)
-            or (sub == "create" and len(rest) >= 2),
+            or (sub == "create" and len(rest) >= 2)
+            or (sub == "ci-token" and len(rest) >= 2 and (
+                (rest[1] == "create" and len(rest) >= 3) or (rest[1] == "list" and len(rest) == 2)
+                or (rest[1] == "revoke" and len(rest) == 3))),
             "license": (sub in ("status", "remove") and len(rest) <= 1)
             or (sub == "install" and len(rest) == 2),
         }.get(cmd, False)
         flags_ok = {"upgrade": ("team", "seats", "org"), "portal": ("org",),
-                    "org": ("org", "admin") if sub == "invite" else ()}.get(cmd, ())
+                    "org": ("org", "admin") if sub == "invite"
+                    else ("org",) if sub == "ci-token" else ()}.get(cmd, ())
         if not ok or any(v is not None and k not in flags_ok for k, v in opts.items()):
             print(USAGE, file=self.err)
             return 2
@@ -229,6 +264,8 @@ class ProAccount(_OrgCommands):
             if cmd == "org":
                 if sub == "invite":
                     return self.cmd_org_invite(base, rest[1], opts["org"], bool(opts["admin"]))
+                if sub == "ci-token":
+                    return self.cmd_org_ci_token(base, *rest[1:], org=opts["org"])
                 return getattr(self, "cmd_org_" + sub)(base, *rest[1:])
             if cmd == "upgrade":
                 return self.cmd_upgrade(base, team=bool(opts["team"]), seats=seats, org=opts["org"])

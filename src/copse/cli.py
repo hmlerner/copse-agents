@@ -1054,7 +1054,8 @@ def ci_run(
     The work happens on a fresh `copse/ci-<issue or slug>` branch. Exits 0
     with the PR URL when every milestone's check passes; otherwise exits 1
     with what happened (the supervisor's question, a stall, the timeout).
-    Needs the `ci` feature (copse Team); in CI, set COPSE_PRO_TOKEN."""
+    Needs the `ci` feature (copse Team); in CI, set COPSE_PRO_TOKEN to an org CI
+    token from `copse account org ci-token create`."""
     from copse import ci
 
     raise typer.Exit(ci.run_cli(goal=goal, goal_file=goal_file, issue=issue, timeout_min=timeout,
@@ -1075,8 +1076,10 @@ def ci_init(
     except ci.CIError as e:
         _fail(str(e))
     typer.echo(f"wrote {path}")
-    typer.echo("Add the COPSE_PRO_TOKEN and ANTHROPIC_API_KEY secrets, and allow GitHub Actions "
-               "to create pull requests in the repo's Actions settings.")
+    typer.echo("Add the COPSE_PRO_TOKEN secret (from `copse account org ci-token create`) and "
+               "ANTHROPIC_API_KEY, and allow GitHub Actions to create pull requests in the repo's "
+               "Actions settings. Only people you trust with write access should be able to apply "
+               "the label.")
 
 
 # -- internal ----------------------------------------------------------------
