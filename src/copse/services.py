@@ -140,7 +140,8 @@ def up(ws: Workspace, cfg: RepoConfig) -> list[str]:
     if not cfg.services:
         return []
     if not entitled():
-        _say("per-worktree services need copse Pro; none started")
+        _say("per-worktree services need copse Pro; none started "
+             "(`copse account` shows your plan; `copse account upgrade` gets it)")
         return []
     if not docker_path():
         _say("docker not found; per-worktree services not started")

@@ -167,7 +167,7 @@ def require_ci(client=None):
                       "`copse account org ci-token create`.") from e
     if CI_FEATURE not in ent.features:
         raise CIError(f"copse ci needs copse Team: your plan ({ent.plan}) does not include "
-                      f"{CI_FEATURE!r}. Plans: https://pawdelta.com/copse#pricing")
+                      f"{CI_FEATURE!r}. See `copse account`; plans: https://pawdelta.com/copse#pricing")
     return ent
 
 

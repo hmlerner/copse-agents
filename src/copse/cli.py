@@ -22,7 +22,10 @@ app = typer.Typer(add_completion=False, help="""copse: run coding agents in para
 
 Run `copse` with no arguments to open (or reopen) a supervisor chat here, with
 the live dashboard underneath. Outside a git repo it starts a scratch session;
-`copse transfer <repo>` moves that work into a real repository later.""")
+`copse transfer <repo>` moves that work into a real repository later.
+
+Paid features (hosted learning, per-worktree services, team policies, CI):
+`copse account` shows what you have and how to get the rest.""")
 agent_app = typer.Typer(no_args_is_help=True, help="Manage agents.")
 app.add_typer(agent_app, name="agent")
 
@@ -638,8 +641,8 @@ def learning(
     if name == plugins.OFF:
         found = learning_mod.installed()
         if cfg.learning == plugins.AUTO:
-            typer.echo("learning is off: hosted learning needs a copse Pro plan that includes it "
-                       "(`copse account status`). Or set \"learning\" in .copse/config.json to an "
+            typer.echo("learning is off: hosted learning needs copse Pro "
+                       "(`copse account` shows your plan; `copse account upgrade` gets it). Or set \"learning\" in .copse/config.json to an "
                        "installed plugin's name" + (f" ({', '.join(found)})." if found else "."))
         else:
             typer.echo('learning is off. Set "learning" in .copse/config.json to a plugin\'s name'
@@ -654,7 +657,7 @@ def learning(
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def account(ctx: typer.Context) -> None:
-    """copse Pro: your account (passed through to the installed account plugin)."""
+    """copse Pro/Team: paid features, login, upgrade, billing, orgs. Bare `copse account` shows what you have."""
     from copse import account as account_mod
     from copse.config import load_repo_config
 

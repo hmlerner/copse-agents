@@ -506,6 +506,23 @@ def test_account_status_offline_uses_the_stored_entitlement(store, backend, toke
     assert code == 0 and "offline" in out and "user_1" in out
 
 
+def test_bare_account_shows_paid_features_when_logged_out(store, backend):
+    code, out, err = run([], store=store, transport=backend)
+    assert code == 0 and not err
+    assert "not logged in" in out and "needs Pro" in out and "needs Team" in out
+    assert "copse account login" in out and "#pricing" in out
+    assert run(["features"], store=store, transport=backend)[1] == out
+
+
+def test_account_features_marks_what_the_plan_includes(store, backend, token):
+    seed(store, backend, access_valid=True,
+         entitlement=token(features=["learning", "services"], exp=int(time.time()) + 3600))
+    code, out, _ = run([], store=store, transport=backend)
+    assert code == 0 and "copse Pro: org org_1" in out
+    assert "✓ learning" in out and "✓ services" in out and "needs Team" in out
+    assert "upgrade --team" in out
+
+
 def test_account_billing_requires_login(store, backend):
     code, _, err = run(["upgrade"], store=store, transport=backend)
     assert code == 1 and "not logged in" in err
@@ -519,7 +536,7 @@ def test_account_rejects_a_non_https_billing_url(store, backend):
 
 
 def test_account_usage(store):
-    assert run([], store=store)[0] == 2
+    assert run(["features", "x"], store=store)[0] == 2
     assert run(["frobnicate"], store=store)[0] == 2
     assert run(["--help"], store=store)[0] == 0
     code, _, err = run(["login", "--base-url", "http://evil.test"], store=store)

@@ -69,6 +69,7 @@ def checks(repo_root: str | None) -> list[Check]:
     out.extend(native_checks(repo_root))
     out.extend(quota_checks(repo_root))
     out.extend(airgap_checks(repo_root))
+    out.extend(pro_checks())
 
     home = config.copse_home()
     try:
@@ -281,6 +282,23 @@ def airgap_checks(repo_root: str | None) -> list[Check]:
                              f"none at {path}: with a Team license, delegations and merges are "
                              "refused until the org's policy is put there"))
     return out
+
+
+def pro_checks() -> list[Check]:
+    """One line on the copse Pro plan, from the stored entitlement (no network).
+    Never a warning: copse is complete without a plan."""
+    from copse import airgap
+
+    if airgap.enabled():
+        return []      # airgap_checks reports the offline license
+    try:
+        from copse.pro import license
+
+        ent = license.current(refresh=False)
+    except Exception:  # noqa: BLE001 - no plan, for whatever reason
+        return [Check(OK, "copse Pro", "not logged in; `copse account` shows what the paid plans add")]
+    return [Check(OK, "copse Pro", f"plan {ent.plan}, features {', '.join(sorted(ent.features)) or '-'}"
+                  + (" (offline grace)" if ent.in_grace else "") + "; details: `copse account`")]
 
 
 def quota_checks(repo_root: str | None) -> list[Check]:

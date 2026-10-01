@@ -261,7 +261,7 @@ your own status line prints, so what you see doesn't change.
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
 | `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
-| `copse account login\|logout\|status\|upgrade\|portal\|org` | your copse Pro account (see "copse Pro and Team" below) |
+| `copse account [login\|logout\|status\|upgrade\|portal\|org]` | paid features: bare `copse account` shows what your plan has and how to get the rest (see "copse Pro and Team" below) |
 | `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
 | `copse attach / cd / open [WS]` | tmux session / path / editor |
@@ -487,11 +487,23 @@ shared within your org) and copse Team adds org policies (allowed providers
 and models, human review before merges) and an audit feed of what copse did.
 Plans and prices: https://pawdelta.com/copse#pricing.
 
+Run `copse account` to see every paid feature, which ones your plan includes,
+how to use them, and the next step to get the rest:
+
+| Feature | Plan | Use it |
+|---|---|---|
+| hosted learning | Pro | on by itself; `copse learning` |
+| per-worktree services | Pro | `"services"` in `.copse/config.json` |
+| org policies + audit feed | Team | `copse account org policy` |
+| Copse-CI | Team | `copse ci init` |
+| audit log, air-gap | Enterprise | `copse audit verify`, `"airgap": true` |
+
 ```sh
+copse account            # paid features: what you have, how to use them, how to get the rest
 copse account login      # log in in your browser (device code); copse checks the plan offline from then on
 copse account status     # your plan, features, hosted learning on or off, when the entitlement expires
-copse account upgrade    # the checkout URL for copse Pro
-copse account portal     # the billing portal (invoices, seats, cancellation); --org ORG for a team org
+copse account upgrade    # opens the checkout for copse Pro (and prints its URL)
+copse account portal     # opens the billing portal (invoices, seats, cancellation); --org ORG for a team org
 copse account org list   # the orgs you belong to; `org use <id>` switches, `org policy` shows the current one
 ```
 

@@ -1,5 +1,5 @@
 """The ``pro`` plugin in copse's ``copse.account`` entry-point group:
-``copse account login|logout|status|upgrade|portal|org``."""
+``copse account [features]|login|logout|status|upgrade|portal|org|license``."""
 
 from __future__ import annotations
 
@@ -9,16 +9,33 @@ from datetime import datetime, timezone
 
 from copse.pro import auth, credentials, license
 
-USAGE = """usage: copse account <command> [--base-url URL]
+PRICING_URL = "https://pawdelta.com/copse#pricing"
 
+# The paid features: (entitlement feature, cheapest plan with it, what it is, how to use it).
+FEATURES = (
+    ("learning", "pro", "hosted learning: picks the best profile per task",
+     "on by itself; see `copse learning`"),
+    ("services", "pro", "per-worktree Docker services (db, cache)",
+     '"services" in .copse/config.json'),
+    ("team", "team", "org policies + team audit feed", "`copse account org policy`"),
+    ("ci", "team", "Copse-CI: issues into pull requests", "`copse ci init`"),
+    ("audit", "enterprise", "tamper-evident local audit log", "`copse audit verify`"),
+    ("airgap", "enterprise", "air-gapped mode, local models only",
+     '"airgap": true in .copse/config.json'),
+)
+
+USAGE = """usage: copse account [<command>] [--base-url URL]
+
+  (none)    what copse Pro/Team add, which you have, and how to get the rest
+  features  the same
   login     log in to copse Pro in your browser (device code)
   logout    revoke this device's session and forget its credentials
   status    show your account, plan, features and when the entitlement expires
-  upgrade   print the checkout URL for copse Pro (your personal org)
+  upgrade   open the checkout for copse Pro (your personal org); prints the URL too
   upgrade --team --seats N [--org ORG]
             print the checkout URL for copse Team on a team org you administer
             (default: the current org)
-  portal [--org ORG]  print the billing portal URL (invoices, seats, cancellation)
+  portal [--org ORG]  open the billing portal (invoices, seats, cancellation)
   org list          list the orgs you belong to
   org create <name> create a team org you own (then `upgrade --team`)
   org invite <email> [--admin]  invite someone to the current org; prints the code
@@ -232,14 +249,14 @@ class ProAccount(_OrgCommands):
         except ValueError:
             print(USAGE, file=self.err)
             return 2
-        cmd, rest = (args[0] if args else None), args[1:]
+        cmd, rest = (args[0] if args else "features"), args[1:]
         sub = None
         if cmd == "org":
             sub = rest[0] if rest else "list"
         elif cmd == "license":
             sub = rest[0] if rest else "status"
         ok = {
-            "login": not rest, "logout": not rest, "status": not rest,
+            "features": not rest, "login": not rest, "logout": not rest, "status": not rest,
             "upgrade": not rest and (bool(opts["team"]) == (seats is not None)) and (seats or 1) >= 1
             and (opts["org"] is None or bool(opts["team"])),
             "portal": not rest,
@@ -276,10 +293,58 @@ class ProAccount(_OrgCommands):
             print(f"copse account: {e}", file=self.err)
             return 1
 
+    def _open(self, url: str) -> None:
+        """Print ``url``; also open it in the browser when talking to a terminal."""
+        self._say(url)
+        if getattr(self.out, "isatty", lambda: False)():
+            import webbrowser
+
+            try:
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001 - the printed URL is enough
+                pass
+
+    def cmd_features(self, base: str | None) -> int:
+        try:
+            ent = license.current(store=self.store, client=self._client(base))
+            err = None
+        except (license.LicenseError, auth.AuthError, credentials.CredentialError) as e:
+            ent, err = None, e
+        have = ent.features if ent else frozenset()
+        if ent:
+            self._say(f"copse {ent.plan.capitalize()}: org {ent.org_id}"
+                      + (" (offline grace)" if ent.in_grace else ""))
+        elif err and "not logged in" not in str(err):
+            self._say(f"copse Pro: {err}")
+        else:
+            self._say("copse Pro: not logged in. copse is complete without it; paid plans add:")
+        self._say("")
+        for feature, plan, what, how in FEATURES:
+            if feature in have:
+                self._say(f"  ✓ {feature:<9} {what:<50} {how}")
+            else:
+                self._say(f"    {feature:<9} {what:<50} needs {plan.capitalize()}")
+        self._say("")
+        if ent is None:
+            self._say("Next: `copse account login`, then `copse account upgrade`. "
+                      f"Plans: {PRICING_URL}")
+        elif not have & {"learning", "services"}:
+            self._say(f"Next: `copse account upgrade` opens the checkout. Plans: {PRICING_URL}")
+        elif "team" not in have:
+            self._say("Next, for a team: `copse account org create NAME`, then "
+                      "`copse account upgrade --team --seats N --org ORG`. "
+                      f"Plans: {PRICING_URL}")
+        elif "audit" not in have:
+            self._say(f"Enterprise (audit log, air-gap) is sales-led: {PRICING_URL}")
+        self._say("More: `copse account status` (your plan), `copse account --help` (all commands).")
+        return 0
+
     def cmd_login(self, base: str | None) -> int:
         client = auth.Client(base, transport=self.transport)
         ent = auth.login(client, self.store, show=self._say)
         self._say(f"Logged in as {ent.sub} ({ent.org_id}), plan {ent.plan}.")
+        self._say("See what your plan includes: `copse account`"
+                  + ("" if ent.features else "; get copse Pro: `copse account upgrade`"))
         return 0
 
     def cmd_logout(self, base: str | None) -> int:
@@ -394,9 +459,9 @@ class ProAccount(_OrgCommands):
     def cmd_upgrade(self, base: str | None, team: bool = False, seats: int | None = None,
                     org: str | None = None) -> int:
         if not team:
-            self._say(auth.checkout_url(self._client(base), self.store))
+            self._open(auth.checkout_url(self._client(base), self.store))
             return 0
-        self._say(auth.checkout_url(self._client(base), self.store, plan="team", seats=seats,
+        self._open(auth.checkout_url(self._client(base), self.store, plan="team", seats=seats,
                                     org_id=self._team_org(org)))
         return 0
 
@@ -404,7 +469,7 @@ class ProAccount(_OrgCommands):
         if org is not None and not auth.ORG_ID_RE.match(org):
             raise auth.AuthError("invalid org id", code="bad_request")
         org = org or (self.store.load() or {}).get("org_id")
-        self._say(auth.portal_url(self._client(base), self.store, org))
+        self._open(auth.portal_url(self._client(base), self.store, org))
         return 0
 
 
