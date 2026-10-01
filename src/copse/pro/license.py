@@ -25,6 +25,14 @@ entitlement is still honoured (flagged ``in_grace``) until ``iat + grace``
 is configured. The bound comes from a signed claim, so nothing a user can
 edit on disk extends it.
 
+Offline license (copse Enterprise): ``copse account license install <file>``
+stores an entitlement issued for offline use (``$COPSE_HOME/pro/license.jwt``,
+0600) after verifying it against the pinned keys; see :func:`install`. In
+air-gap mode (:mod:`copse.airgap`) :func:`current` uses it and never
+refreshes anything; outside air-gap mode it is used when there is no login.
+Its issuer isn't checked against a backend URL, only its signature, type,
+audience and validity.
+
 Development: with ``COPSE_PRO_DEV=1`` *and* an issuer on localhost, keys may
 also be fetched from that server's ``GET /keys`` (JWKS) and are trusted for
 tokens issued by that host only. Never in normal mode.
@@ -291,6 +299,81 @@ def needs_refresh(ent: Entitlement, now: float | None = None) -> bool:
     return ent.in_grace or (ent.exp - now) < REFRESH_WHEN_LEFT * (ent.exp - ent.iat)
 
 
+# -- the offline license --------------------------------------------------------------------
+
+LICENSE_FILE = "license.jwt"
+MAX_LICENSE_FILE = 64 * 1024
+
+
+def license_path():
+    from copse.pro._files import private_dir
+
+    return private_dir() / LICENSE_FILE
+
+
+def parse_license_file(data: bytes | str) -> str:
+    """The entitlement token in a license file: the token itself, or a JSON
+    object holding it under ``entitlement``, ``license`` or ``token``."""
+    if isinstance(data, bytes):
+        try:
+            data = data.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise LicenseError("the license file is not text") from e
+    text = data.strip()
+    if text.startswith("{"):
+        try:
+            obj = json.loads(text)
+        except ValueError as e:
+            raise LicenseError("the license file is not valid JSON") from e
+        tok = next((obj.get(k) for k in ("entitlement", "license", "token")
+                    if isinstance(obj, dict) and isinstance(obj.get(k), str)), None)
+        if not tok:
+            raise LicenseError("the license file holds no entitlement")
+        text = tok.strip()
+    if not text or any(c.isspace() for c in text):
+        raise LicenseError("malformed entitlement")
+    return text
+
+
+def install(data: bytes | str, *, now: float | None = None) -> Entitlement:
+    """Verify the offline license in ``data`` (a license file's contents)
+    against the pinned keys, store it, and return its entitlement. Raises
+    :class:`LicenseError` and stores nothing if it isn't valid right now."""
+    from copse.pro._files import write_private
+
+    token = parse_license_file(data)
+    ent = verify(token, issuer=None, now=now, grace=0)
+    write_private(license_path(), token.encode("ascii"))
+    clear_cache()
+    return ent
+
+
+def uninstall() -> bool:
+    """Remove the offline license; True if there was one."""
+    try:
+        os.unlink(license_path())
+    except FileNotFoundError:
+        return False
+    clear_cache()
+    return True
+
+
+def installed(*, now: float | None = None, grace: float = DEFAULT_GRACE) -> Entitlement | None:
+    """The installed offline license's entitlement, None when none is
+    installed. Raises :class:`LicenseError` for one that is unreadable,
+    malformed, forged or expired past its grace."""
+    from copse.pro._files import read_private
+    from copse.pro.credentials import CredentialError
+
+    try:
+        raw = read_private(license_path(), MAX_LICENSE_FILE)
+    except CredentialError as e:
+        raise LicenseError(str(e)) from e
+    if raw is None:
+        return None
+    return verify(parse_license_file(raw), issuer=None, now=now, grace=grace)
+
+
 # -- the current entitlement ---------------------------------------------------------------
 
 _cache: tuple[float, Entitlement] | None = None
@@ -312,14 +395,31 @@ def current(*, refresh: bool = True, now: float | None = None, store=None, clien
     default = store is None and client is None
     if default and _cache and _cache[0] > now:
         return _cache[1]
+    from copse import airgap
     from copse.pro import auth, credentials
 
+    offline = airgap.enabled()
+    if offline:
+        refresh = False                 # air-gap mode: nothing is ever fetched
+        ent = installed(now=now)
+        if ent is not None:
+            if default:
+                _cache = (min(now + CACHE_SECONDS, ent.grace_until or ent.exp), ent)
+            return ent
     try:
         store = store or credentials.default_store()
         creds = store.load()
     except credentials.CredentialError as e:
         raise LicenseError(str(e)) from e
     if not creds or not (creds.get("entitlement") or creds.get("refresh_token")):
+        if offline:
+            raise LicenseError("air-gap mode: no offline license installed "
+                               "(run `copse account license install <file>`)")
+        ent = installed(now=now)
+        if ent is not None:
+            if default:
+                _cache = (min(now + CACHE_SECONDS, ent.grace_until or ent.exp), ent)
+            return ent
         raise LicenseError("not logged in to copse Pro (run `copse account login`)")
     try:
         issuer = client.base if client is not None else auth.base_url(creds.get("base_url"))

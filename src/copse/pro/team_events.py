@@ -269,6 +269,10 @@ class ProEvents(EventsPlugin):
         return ent.org_id if FEATURE in ent.features and ORG_RE.match(ent.org_id) else None
 
     def emit(self, event: Event) -> None:
+        from copse import airgap
+
+        if airgap.enabled():
+            return                     # air-gap mode: nothing is recorded, spooled or sent
         try:
             org = self.team_org()
             if org is None or event.kind not in KINDS:
@@ -335,7 +339,11 @@ class ProEvents(EventsPlugin):
 
     def send_pending(self) -> bool:
         """Send spooled batches until the spool is empty (True) or a send
-        fails (False, with the backoff advanced)."""
+        fails (False, with the backoff advanced). Nothing in air-gap mode."""
+        from copse import airgap
+
+        if airgap.enabled():
+            return False
         with self.spool.sender() as mine:
             if not mine:
                 return False

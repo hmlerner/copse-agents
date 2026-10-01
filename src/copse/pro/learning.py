@@ -224,8 +224,11 @@ class CloudLearner(LearningPlugin):
 
     def org(self) -> str | None:
         """The active org when the verified entitlement includes hosted
-        learning, else None. Offline verification only."""
-        if time.time() < self._backoff_until:
+        learning, else None (always None in air-gap mode, so every answer
+        comes from the local learner). Offline verification only."""
+        from copse import airgap
+
+        if airgap.enabled() or time.time() < self._backoff_until:
             return None
         try:
             if self._org_override is not None:

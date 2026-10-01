@@ -24,7 +24,11 @@ USAGE = """usage: copse account <command> [--base-url URL]
   org invite <email> [--admin]  invite someone to the current org; prints the code
   org join <code>   accept an invite code and join that org
   org use <org_id>  work as a member of <org_id> (`personal` for your own)
-  org policy        show the current org's policy (and refresh the cached copy)"""
+  org policy        show the current org's policy (and refresh the cached copy)
+  license install <file>  install an offline (copse Enterprise) license; verified with the
+                    pinned keys, no network; used in air-gap mode and when not logged in
+  license status    show the installed offline license and the air-gap status
+  license remove    remove the installed offline license"""
 
 
 def _take(args: list[str], flag: str, value: bool = True):
@@ -198,7 +202,11 @@ class ProAccount(_OrgCommands):
             print(USAGE, file=self.err)
             return 2
         cmd, rest = (args[0] if args else None), args[1:]
-        sub = (rest[0] if rest else "list") if cmd == "org" else None
+        sub = None
+        if cmd == "org":
+            sub = rest[0] if rest else "list"
+        elif cmd == "license":
+            sub = rest[0] if rest else "status"
         ok = {
             "login": not rest, "logout": not rest, "status": not rest,
             "upgrade": not rest and (bool(opts["team"]) == (seats is not None)) and (seats or 1) >= 1
@@ -207,6 +215,8 @@ class ProAccount(_OrgCommands):
             "org": (sub in ("list", "policy") and len(rest) <= 1)
             or (sub in ("use", "invite", "join") and len(rest) == 2)
             or (sub == "create" and len(rest) >= 2),
+            "license": (sub in ("status", "remove") and len(rest) <= 1)
+            or (sub == "install" and len(rest) == 2),
         }.get(cmd, False)
         flags_ok = {"upgrade": ("team", "seats", "org"), "portal": ("org",),
                     "org": ("org", "admin") if sub == "invite" else ()}.get(cmd, ())
@@ -214,6 +224,8 @@ class ProAccount(_OrgCommands):
             print(USAGE, file=self.err)
             return 2
         try:
+            if cmd == "license":
+                return getattr(self, "cmd_license_" + sub)(base, *rest[1:])
             if cmd == "org":
                 if sub == "invite":
                     return self.cmd_org_invite(base, rest[1], opts["org"], bool(opts["admin"]))
@@ -253,7 +265,9 @@ class ProAccount(_OrgCommands):
             who = auth.me(client, self.store)
         except auth.AuthError as e:
             who = {}
-            if e.code == "transport":
+            if e.code == "airgap":
+                self._say("(air-gap mode: showing the offline license)")
+            elif e.code == "transport":
                 self._say("(offline: showing the stored entitlement)")
             else:
                 self._say(f"(could not load account details: {e.code})")
@@ -276,6 +290,68 @@ class ProAccount(_OrgCommands):
             left = max(0, int((ent.grace_until or now) - now)) // 3600
             self._say(f"  grace     until {_when(ent.grace_until)} (~{left} h); "
                       "reconnect to refresh")
+        self._airgap_lines()
+        return 0
+
+    # -- the offline license ----------------------------------------------------------------
+
+    def _airgap_lines(self) -> None:
+        from copse import airgap
+
+        if not airgap.enabled():
+            return
+        self._say(f"  air-gap   on ({airgap.source()}): no outbound traffic, local models only")
+        warning = airgap.warning()
+        if warning:
+            self._say(f"            ! {warning}")
+
+    def cmd_license_install(self, base: str | None, path: str) -> int:
+        from pathlib import Path
+
+        try:
+            data = Path(path).read_bytes()
+        except OSError as e:
+            raise license.LicenseError(f"cannot read {path}: {e.strerror or e}") from e
+        if len(data) > license.MAX_LICENSE_FILE:
+            raise license.LicenseError(f"{path} is too large to be a license file")
+        ent = license.install(data)
+        self._say(f"Installed offline license for org {ent.org_id} (plan {ent.plan}, "
+                  f"{ent.seats} seat(s)); expires {_when(ent.exp)}.")
+        self._say(f"  features  {', '.join(sorted(ent.features)) or '-'}")
+        from copse import airgap
+
+        if airgap.FEATURE in ent.features:
+            self._say('  air-gap mode is included: turn it on with "airgap": true in '
+                      f".copse/config.json or {airgap.ENV}=1")
+        else:
+            self._say(f"  this license doesn't include air-gap mode ({airgap.FEATURE!r})")
+        return 0
+
+    def cmd_license_status(self, base: str | None) -> int:
+        try:
+            ent = license.installed()
+        except license.LicenseError as e:
+            self._say(f"offline license: {e}")
+            self._airgap_lines()
+            return 1
+        if ent is None:
+            self._say("No offline license installed (`copse account license install <file>`).")
+            self._airgap_lines()
+            return 1
+        state = "offline grace" if ent.in_grace else ent.status
+        self._say(f"offline license: {state}")
+        self._say(f"  org       {ent.org_id}")
+        self._say(f"  plan      {ent.plan} ({ent.seats} seat(s))")
+        self._say(f"  features  {', '.join(sorted(ent.features)) or '-'}")
+        self._say(f"  expires   {_when(ent.exp)}")
+        if ent.in_grace:
+            self._say(f"  grace     until {_when(ent.grace_until)}; install a renewed license")
+        self._airgap_lines()
+        return 0
+
+    def cmd_license_remove(self, base: str | None) -> int:
+        self._say("Removed the offline license." if license.uninstall()
+                  else "No offline license was installed.")
         return 0
 
     def cmd_upgrade(self, base: str | None, team: bool = False, seats: int | None = None,

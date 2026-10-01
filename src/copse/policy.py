@@ -135,7 +135,14 @@ def check_assign(cfg: RepoConfig, repo_root: str, profile: str, task: str, mode:
                  branch: str | None = None, actor: Agent | None = None,
                  running_workers: int | None = None) -> Decision:
     """The plugin's decision on starting ``task`` with ``profile`` (allow
-    without a plugin)."""
+    without a plugin). In air-gap mode (``copse.airgap``) only a local
+    profile gets as far as the plugin."""
+    from copse import airgap
+
+    if airgap.enabled(cfg):
+        ok, why = airgap.check_profile(profile, repo_root)
+        if not ok:
+            return deny(why)
     provider, model = _profile_fields(profile, repo_root)
     info = AssignInfo(
         repo_root=repo_root, task=task, files=tuple(files or ()), weight=weight,

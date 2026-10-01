@@ -68,6 +68,7 @@ def checks(repo_root: str | None) -> list[Check]:
 
     out.extend(native_checks(repo_root))
     out.extend(quota_checks(repo_root))
+    out.extend(airgap_checks(repo_root))
 
     home = config.copse_home()
     try:
@@ -207,6 +208,62 @@ def native_checks(repo_root: str | None) -> list[Check]:
                              f"{ep.base_url} runs {ep.model} with a {ctx}-token context, less than "
                              f"the profile's context_tokens ({max_context_tokens}); Ollama truncates "
                              f"silently. Restart with: {fix}"))
+    return out
+
+
+def airgap_checks(repo_root: str | None) -> list[Check]:
+    """Air-gap mode (copse Enterprise): whether it's on and licensed, the
+    configured profiles it refuses (hosted providers), and whether the
+    offline policy file and license are there. One ``ok`` line when off."""
+    from copse import airgap, config
+    from copse.pro import license
+
+    cfg = None
+    if repo_root:
+        try:
+            cfg = config.load_repo_config(repo_root)
+        except ValueError:
+            cfg = None                 # the repo config check reports the bad file
+    if not airgap.enabled(cfg):
+        return [Check(OK, "air-gap", "off")]
+    out: list[Check] = []
+    warning = airgap.warning()
+    if warning:
+        out.append(Check(WARN, "air-gap", f"on via {airgap.source(cfg)}; {warning}"))
+    else:
+        out.append(Check(OK, "air-gap", f"on via {airgap.source(cfg)}: no outbound traffic, "
+                                        "local models only"))
+    hosted = airgap.hosted_profiles(repo_root)
+    if hosted:
+        out.append(Check(WARN, "hosted profiles",
+                         f"{', '.join(hosted)}: refused in air-gap mode. Only a native profile "
+                         "on a loopback or private-network base_url (or one marked `local: "
+                         "true`) can run; point default_agent, routing and reviewer at one"))
+    else:
+        out.append(Check(OK, "hosted profiles", "none (every profile is local)"))
+    try:
+        ent = license.installed()
+    except license.LicenseError as e:
+        out.append(Check(FAIL, "offline license", f"{e}; reinstall with "
+                                                  "`copse account license install <file>`"))
+    else:
+        if ent is None:
+            out.append(Check(WARN, "offline license",
+                             "none installed (`copse account license install <file>`); "
+                             "nothing is entitled while the network is off"))
+        else:
+            out.append(Check(OK, "offline license",
+                             f"org {ent.org_id}, plan {ent.plan}, features "
+                             f"{', '.join(sorted(ent.features)) or '-'}"
+                             + (" (expired; in grace)" if ent.in_grace else "")))
+    if repo_root:
+        path = airgap.policy_path(repo_root)
+        if path.is_file():
+            out.append(Check(OK, "offline policy", str(path)))
+        else:
+            out.append(Check(WARN, "offline policy",
+                             f"none at {path}: with a Team license, delegations and merges are "
+                             "refused until the org's policy is put there"))
     return out
 
 

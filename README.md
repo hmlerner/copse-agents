@@ -493,6 +493,49 @@ key) that the server can't reverse. Never the task text, prompts, diffs,
 file names, paths or branch names. See `src/copse/pro/learning.py` and
 `src/copse/pro/team_events.py` for the exact payloads.
 
+### Air-gapped mode (copse Enterprise)
+
+For machines that must not talk to the internet at all, air-gap mode turns
+copse into a local-only tool: nothing is sent to the copse Pro backend, no
+telemetry of any kind leaves the machine, and delegation only reaches models
+that run on this machine or your private network.
+
+```json
+{"airgap": true}
+```
+
+in `.copse/config.json` (or `.copse/config.local.json`) turns it on for a
+repo; `COPSE_AIRGAP=1` turns it on for a process. Either is enough, and
+neither can turn the other off. With it on:
+
+* **No outbound traffic.** Every copse Pro request (login, entitlement
+  refresh, key fetches, hosted learning, the team policy, the audit feed) is
+  refused before it reaches the network. Learning falls back to the local
+  learner, audit events are not recorded, and the entitlement comes from an
+  offline license that is never refreshed.
+* **Local models only.** `assign` and `handoff` refuse any profile whose
+  model is a hosted service (`claude`, `codex`, `antigravity`, ...). A
+  profile runs only with the native provider on a loopback or private-network
+  `base_url` (`localhost`, `127.0.0.1`, `::1`, `10.x`, `172.16-31.x`,
+  `192.168.x`), or when it is marked `local: true` (for an endpoint named by
+  a hostname copse can't check offline). Point `default_agent`, `routing`
+  and `reviewer` at such profiles; see "The native provider" below.
+* **An offline license.** copse Enterprise issues a signed license file.
+  `copse account license install <file>` verifies it against the keys pinned
+  in copse (no network) and stores it under `~/.copse/pro`; `copse account
+  license status` shows it. Air-gap mode is a feature of that license: with
+  one that doesn't include it, copse still blocks everything (fail safe) and
+  `copse doctor` and `copse account status` say the plan doesn't include it.
+* **An offline team policy.** With a Team license, the org policy is read
+  from `.copse/policy.json` in the repo instead of being fetched: the same
+  JSON `copse account org policy` shows, e.g. `{"org_id": "org_...",
+  "version": 3, "policy": {"allowed_providers": ["native"], "allowed_models":
+  null, "require_human_review": true, "max_parallel_workers": 4}}`. Without
+  the file, delegations and merges are refused until it is there.
+
+`copse doctor` shows whether air-gap mode is on and licensed, which configured
+profiles it refuses, and whether the offline license and policy are in place.
+
 **Closing and cleaning up.** Press `x` on an agent in the sidebar (twice for one
 that's still running) or run `copse close <id>` to stop it and hide it. Stopping means
 every process of the agent, not just its window: Claude Code can host a session in its

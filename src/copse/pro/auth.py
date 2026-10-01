@@ -19,6 +19,9 @@ Transport rules (``UrllibTransport``):
 * Every request has a timeout; responses larger than ``MAX_RESPONSE`` are
   refused; only 307/308 redirects to the same scheme, host and port are
   followed.
+* In air-gap mode (:mod:`copse.airgap`) nothing is sent at all:
+  ``Client.call`` raises :class:`AirGapped` before the transport sees the
+  request.
 
 Base URL: ``COPSE_PRO_BASE_URL`` or ``DEFAULT_BASE_URL``. Tokens are never
 logged, and server error text is sanitized before it is shown.
@@ -41,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from copse import airgap
 from copse.pro import license
 
 log = logging.getLogger(__name__)
@@ -71,8 +75,16 @@ class AuthError(Exception):
 class TransportError(AuthError):
     """The backend couldn't be reached (network, TLS, timeout, bad response)."""
 
+    def __init__(self, message: str, code: str = "transport") -> None:
+        super().__init__(message, code=code)
+
+
+class AirGapped(TransportError):
+    """The request was refused before it left the machine: air-gap mode is
+    on (``copse.airgap``). Handled like being offline, with code ``airgap``."""
+
     def __init__(self, message: str) -> None:
-        super().__init__(message, code="transport")
+        super().__init__(message, code="airgap")
 
 
 def _sanitize(text, limit: int = 200) -> str:
@@ -203,6 +215,10 @@ class Client:
              token: str | None = None) -> tuple[int, dict]:
         url = self.base + path
         check_url(url)
+        try:
+            airgap.guard(url, f"copse Pro {method} {path.split('?', 1)[0]}")
+        except airgap.AirGapError as e:
+            raise AirGapped(str(e)) from None
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         return self.transport.request(method, url, form, headers)
 

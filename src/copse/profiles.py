@@ -41,6 +41,9 @@ class Profile:
     base_url: str | None = None              # e.g. http://localhost:11434/v1
     api_key_env: str | None = None           # name of the variable holding the key, if one is needed
     context_tokens: int | None = None        # the model's window, less room for its reply
+    # The model runs on this machine or the private network: air-gap mode (copse.airgap)
+    # lets this profile run even when its endpoint can't be checked (e.g. a hostname).
+    local: bool = False
     # Extra environment for the agent's process, from ``env.NAME: value`` lines.
     env: dict[str, str] = field(default_factory=dict)
     # --add-dir. Full tool access, not read access: edits and Bash reach these too,
@@ -117,6 +120,7 @@ def _parse(text: str, fallback_name: str) -> Profile:
         base_url=meta.get("base_url") or None,
         api_key_env=meta.get("api_key_env") or None,
         context_tokens=_int(meta.get("context_tokens")),
+        local=_flag(meta.get("local")),
         env={k[4:]: v for k, v in meta.items() if k.startswith("env.") and k[4:]},
     )
 
