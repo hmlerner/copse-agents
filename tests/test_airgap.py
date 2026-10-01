@@ -141,6 +141,7 @@ def test_loopback_and_private_hosts_are_local(host):
 
 @pytest.mark.parametrize("host", ["", "pawdelta.com", "api.openai.com", "8.8.8.8", "172.32.0.1",
                                   "172.15.0.1", "11.0.0.1", "193.168.1.1", "2001:4860:4860::8888",
+                                  "0.0.0.0", "::", "2001:db8::1",
                                   "ollama.internal", "localhost.evil.com"])
 def test_other_hosts_are_not_local(host):
     assert not airgap.is_local_host(host)
@@ -305,7 +306,7 @@ def test_account_status_shows_the_offline_state(on, backend):
 @pytest.mark.parametrize("profile", [
     native(), native(base_url="http://127.0.0.1:8080/v1"), native(base_url="http://[::1]:8080"),
     native(base_url="http://10.2.3.4:11434/v1"), native(base_url="https://192.168.7.7/v1"),
-    native(base_url="http://172.20.0.9:8000/v1"), hosted("claude", local=True),
+    native(base_url="http://172.20.0.9:8000/v1"),
     native(base_url="https://ollama.corp.example", local=True),
 ])
 def test_local_profiles_are_allowed(profile):
@@ -316,8 +317,12 @@ def test_local_profiles_are_allowed(profile):
     (hosted("claude"), "hosted service"), (hosted("codex"), "hosted service"),
     (hosted("antigravity"), "hosted service"), (hosted("subagent"), "hosted service"),
     (hosted("shell"), "hosted service"),
+    # `local: true` can't launder a hosted provider: its CLI talks to its own service.
+    (hosted("claude", local=True), "`local: true` is ignored"),
+    (hosted("codex", local=True), "`local: true` is ignored"),
     (native(base_url="https://api.together.xyz/v1"), "not on this machine"),
     (native(base_url="https://ollama.corp.example/v1"), "not on this machine"),
+    (native(base_url="http://0.0.0.0:11434/v1"), "not on this machine"),
     (native(base_url=None), "no base_url"),
 ])
 def test_hosted_profiles_are_refused(profile, why):
@@ -365,6 +370,95 @@ def test_hosted_profiles_lists_the_builtins(on, repo):
                                "base_url: http://127.0.0.1:11434/v1\nmodel: qwen\n---\nlocal\n")
     names = airgap.hosted_profiles(str(repo))
     assert "developer" in names and "reviewer" in names and "local" not in names
+
+
+# -- no hosted agent is launched, whatever the path ------------------------------------------------------------
+
+LOCAL_PROFILE = ("---\nname: local\nprovider: native\napi: openai\n"
+                 "base_url: http://127.0.0.1:11434/v1\nmodel: qwen\n---\nlocal\n")
+
+
+@pytest.fixture
+def ws(db, repo):
+    from copse import workspaces
+
+    return workspaces.create(db, str(repo), "feature").workspace
+
+
+def test_spawn_refuses_a_hosted_profile_in_air_gap_mode(on, db, ws):
+    from copse import agents
+
+    with pytest.raises(agents.AgentError, match="air-gap mode.*'developer'.*'claude'"):
+        agents.spawn(db, ws, "developer", provider_name="shell", mode="assign")
+    assert db.list_agents() == []
+    with pytest.raises(agents.AgentError, match="'subagent'"):
+        agents.spawn(db, ws, "subagent", mode="handoff", prompt="t")
+    assert db.list_agents() == []
+
+
+def test_spawn_reads_air_gap_from_the_repo_config(db, ws, repo):
+    """The gate holds in a process that never saw COPSE_AIRGAP: the repo
+    config is enough (and arms the process)."""
+    from copse import agents
+
+    write_config(repo, airgap=True)
+    with pytest.raises(agents.AgentError, match="air-gap mode"):
+        agents.spawn(db, ws, "developer", provider_name="shell", mode="assign")
+    assert db.list_agents() == []
+
+
+def test_request_review_refuses_a_hosted_reviewer(on, db, ws):
+    """The default reviewers (reviewer-codex, reviewer) are hosted: in air-gap
+    mode no reviewer starts and the diff never leaves the machine."""
+    from copse import agents
+
+    with pytest.raises(agents.AgentError, match="air-gap mode.*hosted service"):
+        agents.request_review(db, None, ws)
+    with pytest.raises(agents.AgentError, match="air-gap mode.*'reviewer'.*'claude'"):
+        agents.request_review(db, None, ws, profile="reviewer")
+    with pytest.raises(agents.AgentError, match="'codex'"):
+        agents.request_review(db, None, ws, profile="reviewer-codex")
+    assert db.list_agents() == []
+
+
+def test_request_review_passes_a_local_reviewer_to_the_launch(on, db, ws, repo, monkeypatch):
+    from copse import agents
+
+    add_profile(repo, "local", LOCAL_PROFILE)
+    launched = []
+    monkeypatch.setattr(agents, "spawn", lambda db, ws, profile, **kw: launched.append(profile))
+    agents.request_review(db, None, ws, profile="local")
+    assert launched == ["local"]
+
+
+def test_resume_of_a_hosted_agent_is_refused(on, db, ws):
+    """A paused hosted agent from before air-gap mode was turned on can't be
+    brought back either: every launch goes through the same gate."""
+    import time as _time
+
+    from copse import agents
+    from copse.db import Agent
+
+    a = Agent(id="old1", workspace_id=ws.id, profile="developer", provider="claude", parent_id=None,
+              mode="interactive", status="paused", tmux_window="", result=None,
+              created_at=_time.time(), task=None)
+    db.add_agent(a)
+    with pytest.raises(agents.AgentError, match="air-gap mode"):
+        agents._launch(db, a, ws, prompt=None, resume="s1", watch_pane=False)
+
+
+def test_native_client_refuses_a_non_local_endpoint(on):
+    """Defence in depth: even a native profile that slipped through (marked
+    local, or with its base_url overridden) can't reach a hosted endpoint."""
+    from copse.native import client as native_client
+
+    hosted_ep = native_client.Endpoint("https://api.together.xyz/v1", "m", retries=0)
+    with pytest.raises(native_client.ClientError, match="air-gap mode"):
+        native_client.Client(hosted_ep)._post({"x": 1})
+    local_ep = native_client.Endpoint("http://127.0.0.1:1/v1", "m", retries=0, timeout=0.2)
+    with pytest.raises(native_client.ClientError) as e:
+        native_client.Client(local_ep, sleep=lambda s: None)._post({"x": 1})
+    assert "air-gap" not in str(e.value)       # refused by the connection, not the gate
 
 
 # -- the offline team policy ------------------------------------------------------------------------------

@@ -506,20 +506,26 @@ that run on this machine or your private network.
 
 in `.copse/config.json` (or `.copse/config.local.json`) turns it on for a
 repo; `COPSE_AIRGAP=1` turns it on for a process. Either is enough, and
-neither can turn the other off. With it on:
+neither can turn the other off. Once a process has loaded an air-gapped
+repo's config it stays air-gapped for every repo it serves until it exits
+(fail safe: a dashboard or MCP server spanning repos never leaks for one of
+them). With it on:
 
 * **No outbound traffic.** Every copse Pro request (login, entitlement
   refresh, key fetches, hosted learning, the team policy, the audit feed) is
   refused before it reaches the network. Learning falls back to the local
   learner, audit events are not recorded, and the entitlement comes from an
   offline license that is never refreshed.
-* **Local models only.** `assign` and `handoff` refuse any profile whose
-  model is a hosted service (`claude`, `codex`, `antigravity`, ...). A
-  profile runs only with the native provider on a loopback or private-network
-  `base_url` (`localhost`, `127.0.0.1`, `::1`, `10.x`, `172.16-31.x`,
-  `192.168.x`), or when it is marked `local: true` (for an endpoint named by
-  a hostname copse can't check offline). Point `default_agent`, `routing`
-  and `reviewer` at such profiles; see "The native provider" below.
+* **Local models only.** No agent with a hosted provider (`claude`, `codex`,
+  `antigravity`, ...) is launched: not a worker, not a reviewer, not a
+  subagent, and not the chat itself. A profile runs only with the native
+  provider on a loopback or private-network `base_url` (`localhost`,
+  `127.0.0.1`, `::1`, `10.x`, `172.16-31.x`, `192.168.x`), or a native
+  profile marked `local: true` (for an endpoint named by a hostname copse
+  can't check offline; the flag is ignored on hosted providers). Point
+  `default_agent`, `routing` and `reviewer` at such profiles; see "The
+  native provider" below. The native provider also refuses a request to an
+  endpoint that isn't local, as a second line of defence.
 * **An offline license.** copse Enterprise issues a signed license file.
   `copse account license install <file>` verifies it against the keys pinned
   in copse (no network) and stores it under `~/.copse/pro`; `copse account

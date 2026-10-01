@@ -48,7 +48,12 @@ class AirGapError(Exception):
 
 def arm() -> None:
     """Turn air-gap mode on for the rest of this process (a repo config with
-    ``"airgap": true`` was loaded)."""
+    ``"airgap": true`` was loaded). Deliberately one-way and process-wide: a
+    long-lived process that serves several repos (the MCP server, the
+    dashboard) is air-gapped for all of them once one of them asks, and
+    nothing a later config says turns it back off. That fails safe; the cost
+    is that an unrelated repo in the same process loses hosted providers too,
+    which ``copse doctor`` reports as on via the config file."""
     global _armed
     _armed = True
     warn_if_unlicensed()
@@ -121,7 +126,12 @@ def is_local_host(host: str | None) -> bool:
         ip = ipaddress.ip_address(host.split("%", 1)[0])
     except ValueError:
         return False
+    if ip.is_unspecified or ip in _DOCUMENTATION:      # 0.0.0.0, ::, 2001:db8::/32: not a machine
+        return False
     return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+_DOCUMENTATION = ipaddress.ip_network("2001:db8::/32")
 
 
 def is_local_url(url: str | None) -> bool:
@@ -153,20 +163,22 @@ def guard(url: str | None, what: str = "request") -> None:
 def profile_allowed(profile) -> tuple[bool, str]:
     """Whether ``profile`` (a ``copse.profiles.Profile``) may run in air-gap
     mode: ``(True, "")`` or ``(False, why)``."""
-    if getattr(profile, "local", False):
-        return True, ""
     provider = getattr(profile, "provider", None) or "claude"
     base_url = getattr(profile, "base_url", None)
     if provider in LOCAL_PROVIDERS:
-        if is_local_url(base_url):
+        # `local: true` is honoured only here: these providers talk to the
+        # endpoint the profile names, so the flag can be true. A hosted
+        # provider's CLI talks to its own service whatever the profile says.
+        if getattr(profile, "local", False) or is_local_url(base_url):
             return True, ""
         where = base_url or "no base_url"
         return False, (f"its model endpoint ({where}) is not on this machine or the private "
                        "network; use a loopback or private-network base_url, or mark the "
                        "profile `local: true` if it is")
-    return False, (f"provider {provider!r} is a hosted service; only local models (the native "
-                   "provider on a loopback or private-network base_url, or a profile marked "
-                   "`local: true`) may run")
+    flagged = " (`local: true` is ignored for it)" if getattr(profile, "local", False) else ""
+    return False, (f"provider {provider!r} is a hosted service{flagged}; only local models (the "
+                   "native provider on a loopback or private-network base_url, or such a "
+                   "profile marked `local: true`) may run")
 
 
 def check_profile(name: str | None, repo_root: str | None) -> tuple[bool, str]:
