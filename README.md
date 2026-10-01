@@ -542,12 +542,35 @@ recorded as written. `--max-workers` sets `max_agents` in the repo's
 `workflow_dispatch` and whenever an issue gets the label (`copse` by
 default): it installs tmux, copse (`uv tool install copse-agents`) and Claude
 Code, and runs `copse ci run --issue <number>`. It won't overwrite an existing
-file without `--force`. The workflow needs two secrets, `COPSE_PRO_TOKEN` (a
-copse Team CI token: `copse ci run` exchanges it for an entitlement in memory
-and never writes it to disk) and `ANTHROPIC_API_KEY`, and the repo's Actions
-settings must allow GitHub Actions to create pull requests. A PR opened with
-the workflow's own `GITHUB_TOKEN` doesn't trigger the repo's other workflows;
-use a personal access token as `GH_TOKEN` if you need CI to run on it.
+file without `--force`. The workflow needs two secrets, `COPSE_PRO_TOKEN` (an
+org CI token, below) and `ANTHROPIC_API_KEY`, and the repo's Actions settings
+must allow GitHub Actions to create pull requests.
+
+An org admin creates the CI token; it is shown once, so store it straight away:
+
+```sh
+copse account org ci-token create "acme/api actions" --org org_...   # prints cpc_... once
+gh secret set COPSE_PRO_TOKEN                                         # paste it
+copse account org ci-token list --org org_...                         # names, status, last used; never the secret
+copse account org ci-token revoke ct_... --org org_...                # CI stops at its next run
+```
+
+On every run `copse ci run` presents the token to the backend, which checks
+it and the org's live plan and returns a signed entitlement; copse verifies it
+in memory and writes nothing to disk. The token doesn't rotate, so one secret
+keeps working until it is revoked or the org's plan no longer includes CI. A
+refresh token from `copse account login` won't do: it rotates on use.
+
+Two things to know before you add the label to your repo:
+
+- **Who can apply the label.** The issue body steers an unattended agent that
+  can push to the repo (`contents: write`). Only people you trust with write
+  access should be able to apply the trigger label; on a public repo, anyone
+  who can write the issue text is choosing what the agent is told to do.
+- **CI on the pull request.** A PR opened with the workflow's own
+  `GITHUB_TOKEN` doesn't trigger the repo's other workflows. If you want your
+  checks to run on copse's PRs, set `GH_TOKEN` to a GitHub App installation
+  token or a personal access token instead.
 
 **Closing and cleaning up.** Press `x` on an agent in the sidebar (twice for one
 that's still running) or run `copse close <id>` to stop it and hide it. Stopping means

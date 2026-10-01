@@ -13,8 +13,11 @@ when that is set (GitHub Actions).
 ``copse ci init`` writes the workflow that runs it when an issue gets a label.
 
 Entitlement: ``ci`` must be in the copse Pro entitlement. In CI there is no
-keychain and no browser, so a refresh token in ``COPSE_PRO_TOKEN`` is
-exchanged for an entitlement in memory; nothing is written to disk.
+keychain and no browser, so ``COPSE_PRO_TOKEN`` holds an org CI token
+(``cpc_...``, from ``copse account org ci-token create``). Each run presents
+it to ``POST /ci/entitlement`` and verifies the entitlement it gets back, in
+memory; nothing is written to disk. CI tokens don't rotate, so the same
+secret works on every run until an admin revokes it or the org's plan lapses.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from copse.db import DB, Agent, Workspace
 
 CI_FEATURE = "ci"
 TOKEN_ENV = "COPSE_PRO_TOKEN"
+CI_TOKEN_PREFIX = "cpc_"
 BRANCH_PREFIX = "copse/ci-"
 DEFAULT_TIMEOUT_MIN = 60
 POLL_SECONDS = 10.0
@@ -123,23 +127,21 @@ def goal_from_file(path: str | Path) -> Goal:
 
 
 def entitlement_from_token(token: str, client=None, now: float | None = None):
-    """Exchange a refresh token for an entitlement without storing anything.
-    The backend may rotate the token; the new one is dropped on the floor,
-    so the backend should issue non-rotating tokens for CI."""
-    from copse.pro import auth
+    """Exchange an org CI token (``cpc_...``) for a verified entitlement,
+    without storing anything. Refresh tokens are refused: they rotate, and
+    the backend treats a reused one as stolen, so a CI secret would work once."""
+    from copse.pro import auth, license
 
+    if not token.startswith(CI_TOKEN_PREFIX):
+        raise auth.AuthError(f"{TOKEN_ENV} is not a CI token", code="not_a_ci_token")
     client = client or auth.Client()
-    status, body = client.post("/token/refresh", {
-        "grant_type": "refresh_token", "refresh_token": token, "client_id": auth.CLIENT_ID})
+    status, body = client.call("POST", "/ci/entitlement", None, token=token)
     if status != 200:
         raise auth._error(status, body)
-    access = body.get("access_token")
-    if not isinstance(access, str) or not access:
-        raise auth.AuthError("backend response is missing tokens", code="bad_response")
-    got = auth._fetch_entitlement(client, access, time.time() if now is None else now)
-    if got == 401:
-        raise auth.AuthError("backend refused its own access token", code="invalid_token")
-    return got[1]
+    tok = body.get("entitlement")
+    if not isinstance(tok, str):
+        raise auth.AuthError("backend returned no entitlement", code="bad_response")
+    return license.verify(tok, issuer=client.base, now=time.time() if now is None else now, grace=0)
 
 
 def require_ci(client=None):
@@ -154,10 +156,11 @@ def require_ci(client=None):
         else:
             ent = license.current(client=client) if client is not None else license.current()
     except auth.AuthError as e:
-        raise CIError(f"copse ci: {TOKEN_ENV} was refused ({e.code}); "
-                      "set it to a copse Team CI token") from e
+        raise CIError(f"copse ci: {TOKEN_ENV} was refused ({e.code}); set it to a CI token "
+                      "from `copse account org ci-token create`") from e
     except license.LicenseError as e:
-        raise CIError(f"copse ci: {e}. In CI, set {TOKEN_ENV} to a copse Team CI token.") from e
+        raise CIError(f"copse ci: {e}. In CI, set {TOKEN_ENV} to a CI token from "
+                      "`copse account org ci-token create`.") from e
     if CI_FEATURE not in ent.features:
         raise CIError(f"copse ci needs copse Team: your plan ({ent.plan}) does not include "
                       f"{CI_FEATURE!r}. Plans: https://pawdelta.com/copse#pricing")
@@ -434,9 +437,14 @@ WORKFLOW = """\
 # Written by `copse ci init`. copse turns an issue labelled "{label}" into a
 # pull request: https://github.com/hmlerner/copse-agents#copse-ci-issues-into-pull-requests
 #
-# Secrets: COPSE_PRO_TOKEN (a copse Team CI token) and ANTHROPIC_API_KEY (for
-# Claude Code). In the repo's Actions settings, allow GitHub Actions to create
-# pull requests.
+# Secrets: COPSE_PRO_TOKEN (an org CI token, cpc_..., from
+# `copse account org ci-token create`) and ANTHROPIC_API_KEY (for Claude Code).
+# In the repo's Actions settings, allow GitHub Actions to create pull requests.
+#
+# The issue body steers an unattended agent that can push (contents: write):
+# only people you trust with write access should be able to apply the label.
+# Pull requests opened with GITHUB_TOKEN don't trigger other workflows; to run
+# your CI on them, set GH_TOKEN to a GitHub App or personal access token.
 name: copse
 
 on:

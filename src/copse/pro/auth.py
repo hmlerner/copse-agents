@@ -603,3 +603,45 @@ def accept_invite(client: Client, store, code: str) -> dict:
     if status != 200:
         raise _error(status, body)
     return {k: _sanitize(body.get(k, ""), 64) for k in ("org_id", "role")}
+
+
+def _ci_tokens_path(org_id: str) -> str:
+    return f"/orgs/{urllib.parse.quote(org_id, safe='')}/ci-tokens"
+
+
+def create_ci_token(client: Client, store, org_id: str, name: str) -> dict:
+    """Create an org CI token (``POST /orgs/{org_id}/ci-tokens``, admin+, a plan
+    with ``ci``). The token is in the answer once; the backend keeps only its hash."""
+    status, body = authed(client, store, "POST", _ci_tokens_path(org_id), JSONBody({"name": name}))
+    if status != 200:
+        raise _error(status, body)
+    token = body.get("token")
+    if not isinstance(token, str) or not re.fullmatch(r"cpc_[A-Za-z0-9_-]{20,200}", token):
+        raise AuthError("backend returned no CI token", code="bad_response")
+    out = {k: _sanitize(body.get(k, ""), 100) for k in ("token_id", "org_id", "name")}
+    out["token"] = token
+    return out
+
+
+def list_ci_tokens(client: Client, store, org_id: str) -> list[dict]:
+    """The org's CI tokens without their secrets (``GET /orgs/{org_id}/ci-tokens``, admin+)."""
+    status, body = authed(client, store, "GET", _ci_tokens_path(org_id))
+    if status != 200:
+        raise _error(status, body)
+    out = []
+    for t in body.get("tokens") if isinstance(body.get("tokens"), list) else []:
+        if isinstance(t, dict):
+            row = {k: _sanitize(t.get(k) or "", 100) for k in ("token_id", "name", "created_by", "status")}
+            row.update({k: t.get(k) if isinstance(t.get(k), int) else None
+                        for k in ("created_at", "last_used_at")})
+            out.append(row)
+    return out
+
+
+def revoke_ci_token(client: Client, store, org_id: str, token_id: str) -> None:
+    """Revoke a CI token (``DELETE /orgs/{org_id}/ci-tokens/{token_id}``, admin+)."""
+    if not re.fullmatch(r"ct_[0-9a-f]{32}", token_id):
+        raise AuthError("invalid CI token id (expected ct_ and 32 hex digits)", code="bad_request")
+    status, body = authed(client, store, "DELETE", f"{_ci_tokens_path(org_id)}/{token_id}")
+    if status != 200:
+        raise _error(status, body)
