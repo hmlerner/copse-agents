@@ -353,6 +353,32 @@ def test_check_assign_refuses_hosted_profiles_in_air_gap_mode(on, repo):
     assert not d.allowed and "couldn't be loaded" in d.reason
 
 
+def test_air_gap_denials_are_audited_like_any_other(on, repo, copse_home, monkeypatch):
+    """A delegation air-gap mode refuses reaches the events plugins as a
+    deny_assign with the reason, so the audit chain records it."""
+    from copse import plugins
+    from copse.pro import audit_chain
+    from copse.pro.audit_chain import AuditChain
+    from test_plugins import Recorder, install
+
+    plugins.reset()
+    audit = AuditChain(str(repo), home=copse_home, entitled=lambda: True)
+    recorder = Recorder()
+    install(monkeypatch, {plugins.EVENTS: [("audit", lambda r: audit), ("rec", lambda r: recorder)]})
+    try:
+        d = policy.check_assign(RepoConfig(), str(repo), "developer", "secret task", "assign",
+                                branch="feat/x")
+        assert not d.allowed and "air-gap mode" in d.reason
+        recs = audit_chain.read_records(audit_chain.log_path(str(repo), copse_home))
+        assert [r["event"]["kind"] for r in recs] == ["deny_assign"]
+        assert recs[0]["event"]["reason"] == d.reason
+        assert recs[0]["event"]["profile"] == "developer" and recs[0]["event"]["provider"] == "claude"
+        assert [e.kind for e in recorder.events] == ["deny_assign"]
+        assert audit_chain.verify(str(repo), home=copse_home).ok
+    finally:
+        plugins.reset()
+
+
 def test_check_assign_from_the_repo_config_alone(repo):
     """The config object is enough: the process needn't be armed."""
     assert policy.check_assign(RepoConfig(), str(repo), "developer", "t", "assign").allowed
@@ -698,14 +724,21 @@ def test_doctor_shows_air_gap_status_and_hosted_profiles(on, repo, token):
     assert "refused in air-gap mode" in checks["hosted profiles"].detail
     assert checks["offline license"].level == doctor.WARN
     assert checks["offline policy"].level == doctor.WARN and "policy.json" in checks["offline policy"].detail
+    # The chat is a hosted agent too: copse itself can't start on the default developer.
+    assert checks["default agent"].level == doctor.FAIL
+    assert "developer" in checks["default agent"].detail
+    assert "`copse` won't start" in checks["default agent"].detail
 
     license.install(enterprise(token))
     (repo / ".copse").mkdir(exist_ok=True)
     airgap.policy_path(str(repo)).write_text(json.dumps(POLICY))
+    add_profile(repo, "local", LOCAL_PROFILE)
+    write_config(repo, default_agent="local")
     checks = by_name(doctor.airgap_checks(str(repo)))
     assert checks["air-gap"].level == doctor.OK and "no outbound traffic" in checks["air-gap"].detail
     assert checks["offline license"].level == doctor.OK and ORG in checks["offline license"].detail
     assert checks["offline policy"].level == doctor.OK
+    assert checks["default agent"].level == doctor.OK and "local" in checks["default agent"].detail
 
 
 def test_doctor_reads_air_gap_from_the_repo_config(repo):

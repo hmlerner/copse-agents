@@ -247,6 +247,16 @@ def airgap_checks(repo_root: str | None) -> list[Check]:
                          "true`) can run; point default_agent, routing and reviewer at one"))
     else:
         out.append(Check(OK, "hosted profiles", "none (every profile is local)"))
+    # The chat itself is an agent: `copse` won't start on a hosted default_agent.
+    default = (cfg.default_agent if cfg else None) or config.RepoConfig().default_agent
+    ok, why = airgap.check_profile(default, repo_root)
+    if ok:
+        out.append(Check(OK, "default agent", f"{default} (local: `copse` can start)"))
+    else:
+        out.append(Check(FAIL, "default agent",
+                         f"{default}: `copse` won't start in air-gap mode, since the chat is a "
+                         f"hosted agent ({why.split(': ', 2)[-1]}). Set default_agent in "
+                         ".copse/config.json to a local native profile"))
     try:
         ent = license.installed()
     except license.LicenseError as e:
