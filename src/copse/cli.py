@@ -61,7 +61,6 @@ def _after_detach(ws: Workspace) -> None:
     """Back at the user's own prompt: say what happened and what's still running."""
     from copse import scratch
 
-    db = DB()
     if tmux.has_session(ws.tmux_session):
         typer.echo("Detached; everything is still running. Run `copse` here to reopen.")
         return

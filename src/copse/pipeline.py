@@ -27,7 +27,6 @@ result directly, as before.
 
 from __future__ import annotations
 
-import os
 import subprocess
 
 from copse import agents, autopilot, codemap, events, gates, git, history, learning, policy, tasks, workspaces

@@ -192,7 +192,7 @@ def test_hook_still_lets_an_unapproved_plan_first_worker_read_and_run(db, repo, 
 def test_waiting_on_a_plan_is_not_stalled(db, repo, boss, monkeypatch):
     monkeypatch.setattr(agents, "is_alive", lambda *a, **k: True)
     long_ago = time.time() - autopilot.IDLE_GRACE_SECONDS - 60
-    a = planner(db, boss, plan_state="proposed")
+    planner(db, boss, plan_state="proposed")
     db.update_agent("w1", status="idle")
     db.update_agent("w1", status_since=long_ago)
     working, stalled = autopilot.split_workers(db, "boss")

@@ -12,9 +12,9 @@ import pytest
 
 from copse.native import (Client, ClientError, Endpoint, LoopConfig, NativeAgent, Permissions,
                           Toolbox, ToolSpec, core_tools)
-from copse.native.client import ToolCall, Usage
+from copse.native.client import Usage
 from copse.native.permissions import bash_matches, split_commands
-from copse.native.tools import ToolResult, clip
+from copse.native.tools import clip
 
 
 # -- a scripted endpoint ---------------------------------------------------------

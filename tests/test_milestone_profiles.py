@@ -1,6 +1,6 @@
 import pytest
 
-from copse import autopilot, workspaces
+from copse import autopilot
 from copse.config import RepoConfig
 from test_autopilot import add_agent, root  # noqa: F401  (the `root` fixture)
 

@@ -381,7 +381,7 @@ def test_follow_skips_a_paused_root(db, tmp_path, session):
     """The tombstone pause() sets (status="paused") before closing windows:
     a follow call that lands after that must not touch anything."""
     win_a = make_window(session, "winA")
-    win_b = make_window(session, "winB")
+    make_window(session, "winB")
     ws = make_workspace(db, tmp_path, "winA", session)
     fake_agent(db, ws, win_a, "root1", status="paused")
 

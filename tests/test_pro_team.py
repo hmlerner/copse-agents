@@ -17,7 +17,6 @@ from copse.events import Event
 from copse.policy import AssignInfo, MergeInfo
 from copse.pro import account, auth, credentials
 from copse.pro import team_events
-from copse.pro import team_policy
 from copse.pro._files import private_dir
 from copse.pro.orgkey import OrgKey
 from copse.pro.team_events import ProEvents, Spool

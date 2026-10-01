@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from copse import agents, cull, profiles, workspaces
+from copse import agents, cull, workspaces
 from copse.db import Agent
 from copse.native.permissions import uncovered_part
 from copse.profiles import load_profile

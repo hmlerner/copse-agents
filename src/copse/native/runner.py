@@ -289,7 +289,7 @@ def run_native(db: DB, agent_id: str, resume: str | None = None, *,
             return 1
         loop.save(saved)
         if streamed["text"].strip():  # the answer is already on screen
-            print(f"\n── copse: turn finished ──", flush=True)
+            print("\n── copse: turn finished ──", flush=True)
         else:
             print(f"\n{_preview(answer, 12)}\n── copse: turn finished ──", flush=True)
         agent = db.get_agent(agent_id)
