@@ -27,8 +27,11 @@ other groups select themselves: when exactly one plugin is installed in the
 group it is used, so installing one package is all a repo needs. With
 several installed, or to turn one off, the repo config's ``plugins`` object
 names the one to use per group: ``"plugins": {"events": "<name>", "policy":
-"off"}``. copse's own Pro plugins (``pro`` in the events, policy and account
-groups) are always installed and do nothing without an entitlement.
+"off"}``. The events group is different: it fans out (``select_all``), so
+every installed events plugin hears every event unless the config names the
+ones to use (one name, or several separated by commas). copse's own Pro
+plugins (``pro`` in the events, policy and account groups, ``audit`` in
+events) are always installed and do nothing without an entitlement.
 
 Every plugin call is guarded: a missing, broken or slow-to-import plugin is
 logged and treated as absent, and never fails the operation copse was
@@ -133,6 +136,26 @@ def select(group: str, cfg: RepoConfig, repo_root: str) -> object | None:
     return load(group, name, repo_root) if name else None
 
 
+def select_all(group: str, cfg: RepoConfig, repo_root: str) -> list[object]:
+    """Every plugin the repo uses for ``group`` (the events group fans out
+    this way): the ones the config names (one name, several separated by
+    commas, or ``"off"`` for none), else every plugin installed in the group.
+    Plugins that can't load are left out."""
+    configured = cfg.plugins.get(short(group)) if isinstance(cfg.plugins, dict) else None
+    if isinstance(configured, (list, tuple)):
+        names = [n.strip() for n in configured if isinstance(n, str) and n.strip()]
+    elif isinstance(configured, str) and configured.strip():
+        names = [n.strip() for n in configured.split(",") if n.strip()]
+    else:
+        names = installed(group)
+    out: list[object] = []
+    for name in names:
+        p = load(group, name, repo_root)
+        if p is not None:
+            out.append(p)
+    return out
+
+
 def reset() -> None:
     """Forget every loaded plugin and choice (the next call loads again)."""
     _loaded.clear()
@@ -140,4 +163,5 @@ def reset() -> None:
 
 
 __all__ = ["ACCOUNT", "AUTO", "CLOUD", "EVENTS", "GROUPS", "LEARNING", "OFF", "POLICY",
-           "auto_learning", "installed", "learning_name", "load", "reset", "select", "short"]
+           "auto_learning", "installed", "learning_name", "load", "reset", "select",
+           "select_all", "short"]
