@@ -7,7 +7,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from copse.pro import auth, credentials, license
+from copse.pro import auth, credentials, license, loopback
 
 PRICING_URL = "https://pawdelta.com/copse#pricing"
 
@@ -28,7 +28,9 @@ USAGE = """usage: copse account [<command>] [--base-url URL]
 
   (none)    what copse Pro/Team add, which you have, and how to get the rest
   features  the same
-  login     log in to copse Pro in your browser (device code)
+  login     log in to copse Pro: opens your browser and waits for it to come back
+  login --device
+            show a code to enter in a browser elsewhere instead (SSH, no browser here)
   logout    revoke this device's session and forget its credentials
   status    show your account, plan, features and when the entitlement expires
   upgrade   open the checkout for copse Pro (your personal org); prints the URL too
@@ -244,7 +246,8 @@ class ProAccount(_OrgCommands):
             return 0
         try:
             opts = {"team": _take(args, "--team", value=False), "seats": _take(args, "--seats"),
-                    "org": _take(args, "--org"), "admin": _take(args, "--admin", value=False)}
+                    "org": _take(args, "--org"), "admin": _take(args, "--admin", value=False),
+                    "device": _take(args, "--device", value=False)}
             seats = int(opts["seats"]) if opts["seats"] is not None else None
         except ValueError:
             print(USAGE, file=self.err)
@@ -269,7 +272,7 @@ class ProAccount(_OrgCommands):
             "license": (sub in ("status", "remove") and len(rest) <= 1)
             or (sub == "install" and len(rest) == 2),
         }.get(cmd, False)
-        flags_ok = {"upgrade": ("team", "seats", "org"), "portal": ("org",),
+        flags_ok = {"upgrade": ("team", "seats", "org"), "portal": ("org",), "login": ("device",),
                     "org": ("org", "admin") if sub == "invite"
                     else ("org",) if sub == "ci-token" else ()}.get(cmd, ())
         if not ok or any(v is not None and k not in flags_ok for k, v in opts.items()):
@@ -288,6 +291,8 @@ class ProAccount(_OrgCommands):
                 return self.cmd_upgrade(base, team=bool(opts["team"]), seats=seats, org=opts["org"])
             if cmd == "portal":
                 return self.cmd_portal(base, org=opts["org"])
+            if cmd == "login":
+                return self.cmd_login(base, device=bool(opts["device"]))
             return getattr(self, "cmd_" + cmd)(base)
         except (auth.AuthError, license.LicenseError, credentials.CredentialError) as e:
             print(f"copse account: {e}", file=self.err)
@@ -339,9 +344,12 @@ class ProAccount(_OrgCommands):
         self._say("More: `copse account status` (your plan), `copse account --help` (all commands).")
         return 0
 
-    def cmd_login(self, base: str | None) -> int:
+    def cmd_login(self, base: str | None, device: bool = False) -> int:
+        """Browser sign-in when a browser can open here (a terminal, not SSH,
+        a display on Linux), else, or with ``--device``, the device code."""
         client = auth.Client(base, transport=self.transport)
-        ent = auth.login(client, self.store, show=self._say)
+        browser = not device and loopback.can_open_browser(self.out)
+        ent = auth.login(client, self.store, show=self._say, browser=browser)
         self._say(f"Logged in as {ent.sub} ({ent.org_id}), plan {ent.plan}.")
         self._say("See what your plan includes: `copse account`"
                   + ("" if ent.features else "; get copse Pro: `copse account upgrade`"))

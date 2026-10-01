@@ -500,7 +500,7 @@ how to use them, and the next step to get the rest:
 
 ```sh
 copse account            # paid features: what you have, how to use them, how to get the rest
-copse account login      # log in in your browser (device code); copse checks the plan offline from then on
+copse account login      # opens your browser to sign in (--device: enter a code instead, e.g. over SSH); copse checks the plan offline from then on
 copse account status     # your plan, features, hosted learning on or off, when the entitlement expires
 copse account upgrade    # opens the checkout for copse Pro (and prints its URL)
 copse account portal     # opens the billing portal (invoices, seats, cancellation); --org ORG for a team org
