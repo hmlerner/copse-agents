@@ -44,6 +44,7 @@ pro = "copse.pro.team_policy:make"
 
 [project.entry-points."copse.events"]
 pro = "copse.pro.team_events:make"
+audit = "copse.pro.audit_chain:make"
 
 [project.entry-points."copse.learning"]
 cloud = "copse.pro.learning:make"
