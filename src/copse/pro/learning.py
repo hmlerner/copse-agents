@@ -6,7 +6,8 @@ the default ``"auto"`` selects it when the verified entitlement includes the
 hosted learner and, whenever that can't be used -- no ``learning`` feature in
 the verified entitlement, offline, rate-limited, slow (more than
 ``SUGGEST_TIMEOUT``), or any error at all -- from a local learner when one is
-installed as the ``local`` entry point in ``copse.learning`` (copse-pro),
+installed as the ``local`` entry point in ``copse.learning`` (the private
+local learner),
 else with no suggestion (None, so copse picks as it would without a plugin).
 Outcomes are always handed to that local learner too. It never raises into
 copse.
@@ -61,7 +62,6 @@ MAX_CANDIDATES = 16
 RECORD_KEYS = frozenset({"org_id", "key_id", "repo_key", "agent_ref", "profile", "weight", "features", "event",
                          "approved", "checks_passed", "review_rounds", "escalations", "tokens",
                          "wall_seconds"})
-SUGGEST_KEYS = frozenset({"org_id", "key_id", "repo_key", "weight", "features", "candidates", "candidate_cost"})
 
 
 # -- keys -----------------------------------------------------------------------------------------
@@ -174,7 +174,7 @@ class _Unavailable(Exception):
 
 
 def local_plugin(repo_root: str) -> LearningPlugin | None:
-    """The ``local`` learning plugin, if one is installed (copse-pro)."""
+    """The ``local`` learning plugin, if one is installed (the private local learner)."""
     if LOCAL_PLUGIN not in plugins.installed(plugins.LEARNING):
         return None
     p = plugins.load(plugins.LEARNING, LOCAL_PLUGIN, repo_root)
@@ -392,7 +392,7 @@ class CloudLearner(LearningPlugin):
 
     def report(self, reset: bool = False) -> str:
         if self.local is None:
-            local = "no local learner installed (copse-pro adds one); nothing is learned offline"
+            local = "no local learner installed; nothing is learned offline"
         else:
             try:
                 local = self.local.report(reset=reset)

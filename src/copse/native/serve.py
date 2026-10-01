@@ -36,7 +36,7 @@ from urllib.parse import urlparse
 
 from copse.config import RepoConfig, copse_home
 from copse.native.client import Endpoint
-from copse.profiles import Profile, list_profiles
+from copse.profiles import list_profiles
 
 LOG_NAME = "ollama.log"
 PIDS_NAME = "ollama-pids.json"  # host -> pid of each `ollama serve` copse started

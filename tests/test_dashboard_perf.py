@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from copse import agents, git, status_cache, tmux, view, workspaces
-from copse.db import DB
 
 from conftest import sh
 
@@ -32,7 +31,7 @@ def count_calls(monkeypatch, target, name):
 
 
 def test_warm_snapshot_makes_zero_git_subprocesses(db, repo, monkeypatch):
-    ws = make_workspaces(db, repo, ["one"])[0]
+    make_workspaces(db, repo, ["one"])
     view.snapshot(db, str(repo))  # cold: populates the cache
 
     calls = count_calls(monkeypatch, git, "run")

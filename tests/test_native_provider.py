@@ -2,7 +2,6 @@
 tools in-process, reminders to report, messages, resume, usage."""
 
 import shutil
-import sys
 import time
 from pathlib import Path
 
@@ -234,7 +233,7 @@ def test_resume_restarts_a_paused_native_worker_on_its_conversation(db, ws, loca
     monkeypatch.setattr(agents, "_launch", lambda db_, a, ws_, **kw: launched.update(kw, agent=a))
     saved = Path(ws.path) / "conv.json"
     saved.write_text("{}")
-    a = native_agent(db, ws, status="paused", agent_id="n2")
+    native_agent(db, ws, status="paused", agent_id="n2")
     db.update_agent("n2", session_ref=str(saved), task="the task")
     assert [x.id for x in agents.resume(db, "n2")] == ["n2"]
     assert launched["resume"] == str(saved) and launched["prompt"] is None

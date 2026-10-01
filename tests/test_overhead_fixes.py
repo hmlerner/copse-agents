@@ -3,7 +3,6 @@ checks, reviews carried over a sync, supervisor sizing, inbox delivery,
 and `copse doctor`."""
 import asyncio
 import json
-import os
 import socket
 import threading
 import time

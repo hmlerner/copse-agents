@@ -282,7 +282,7 @@ def test_cancellation_cascades_to_a_task_depending_on_the_cancelled_one(db, repo
 
 def test_new_task_depending_on_an_already_cancelled_task_fails_clearly(db, repo, boss, monkeypatch):
     monkeypatch.setattr(agents, "is_alive", lambda a: True)
-    out_a = asyncio.run(mcp_server.assign("developer", "do A", branch="feat-a"))
+    asyncio.run(mcp_server.assign("developer", "do A", branch="feat-a"))
     ws_a = next(w for w in db.find_workspaces(str(repo)) if w.branch == "feat-a")
     commit_file(Path(ws_a.path), "a_output.txt")  # ahead of main: "unmerged"
     asyncio.run(mcp_server.assign("developer", "do B", branch="feat-b", depends_on=["feat-a"]))

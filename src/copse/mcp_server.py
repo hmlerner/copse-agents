@@ -11,7 +11,7 @@ import time
 
 from mcp.server.mcpserver import MCPServer
 
-from copse import agents, autopilot, codemap, gates, git, history, pipeline, policy, quota, sessions, tasks, workspaces
+from copse import agents, autopilot, git, history, pipeline, policy, quota, sessions, tasks, workspaces
 from copse.config import RepoConfig, load_repo_config
 from copse.db import DB, Agent, Workspace
 from copse.profiles import list_profiles

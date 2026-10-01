@@ -2,9 +2,8 @@ import os
 
 import pytest
 
-from copse import git, scratch, workspaces
+from copse import git, scratch
 
-from conftest import sh
 
 
 @pytest.fixture
