@@ -1,8 +1,10 @@
 """The ``audit`` events plugin (``copse.events`` group): a local,
 tamper-evident log of every action copse took (copse Enterprise).
 
-Only with a verified entitlement carrying the ``audit`` feature: without it
-``emit`` drops the event on the spot and writes nothing, not even the key.
+Only with a verified entitlement carrying the ``audit`` feature (checked
+offline from the stored entitlement, never refreshed over the network, so a
+merge never waits on it): without it ``emit`` drops the event on the spot and
+writes nothing, not even the key.
 
 Each :class:`copse.events.Event` -- a delegation, a review verdict, an
 escalation, a merge, a worktree removal, or a policy refusal -- becomes one
@@ -477,11 +479,17 @@ class AuditChain(EventsPlugin):
         self.dropped = 0
 
     def entitled(self) -> bool:
+        """Whether the stored entitlement includes ``audit``: an offline
+        check only (no token refresh, like the Team feed), so recording an
+        event never waits on the network. Fails closed."""
         if self._entitled is not None:
             return bool(self._entitled())
         from copse.pro import license
 
-        return license.has(FEATURE)
+        try:
+            return FEATURE in license.current(refresh=False).features
+        except Exception:  # noqa: BLE001 - not logged in, expired, unreadable: no audit
+            return False
 
     def emit(self, event: Event) -> None:
         try:

@@ -250,6 +250,27 @@ def test_the_audit_feature_of_a_real_entitlement_turns_it_on(copse_home, signing
     assert verify(REPO).records == 1
 
 
+def test_the_gate_is_offline_only(copse_home, signing_key, monkeypatch):
+    """A near-expiry entitlement with a refresh token on file: the Team feed
+    and the audit chain still don't refresh it, so a merge never waits on
+    the network. The stored (still valid) entitlement decides."""
+    from copse.pro import auth, license
+
+    now = int(time.time())
+    credentials.default_store().save({
+        "base_url": BASE, "refresh_token": "rt_1",
+        "entitlement": sign(signing_key, claims(features=["audit"], iat=now - 3500, exp=now + 60))})
+    license.clear_cache()
+
+    def no_network(*a, **kw):
+        raise AssertionError("the audit gate must not refresh over the network")
+
+    monkeypatch.setattr(auth, "refresh", no_network)
+    monkeypatch.setattr(auth, "Client", no_network)
+    AuditChain(REPO).emit(ev())
+    assert verify(REPO).records == 1
+
+
 def test_emit_never_raises(copse_home, monkeypatch):
     blocked = copse_home / "audit"
     blocked.parent.mkdir(parents=True, exist_ok=True)
