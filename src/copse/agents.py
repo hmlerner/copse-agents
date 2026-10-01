@@ -287,7 +287,7 @@ def _profile_for(db: DB, agent: Agent, ws: Workspace):
 
     profile = load_profile(agent.profile, ws.repo_root)
     if db.get_autopilot(agent.id):
-        profile = replace(profile, prompt=profile.prompt + pilot.guide(load_repo_config(ws.repo_root)))
+        profile = replace(profile, prompt=profile.prompt + pilot.guide(load_repo_config(ws.repo_root), ws.repo_root))
     if agent.mode == "interactive":
         from copse import codemap
 

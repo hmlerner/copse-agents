@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install copse: curl -fsSL https://pawdelta.com/copse/install.sh | sh
+# Install copse: curl -fsSL pawdelta.com/copse/install | sh
 #
 # Installs uv (if missing) and tmux (with Homebrew on macOS; prints the
 # command elsewhere), then copse itself with `uv tool install`, then runs

@@ -28,7 +28,7 @@ review.
 ## Install
 
 ```sh
-curl -fsSL https://pawdelta.com/copse/install.sh | sh
+curl -fsSL pawdelta.com/copse/install | sh
 ```
 
 The script ([scripts/install.sh](scripts/install.sh)) installs uv and tmux if
@@ -61,6 +61,12 @@ Cargo, Go, Bundler, a Makefile) and writes `.copse/config.json` with the
 and the git-ignored env files to `copy` into each worktree. It shows what it found
 before writing, never touches an existing config, and finishes with the same checks
 as `copse doctor`. Commit the config so your team gets it too.
+
+New to copse? `copse demo` runs it on a tiny practice repo (under `~/.copse/demo/`)
+with two failing test files and a two-milestone goal: in a few minutes you watch two
+workers fix them in parallel, each branch get reviewed and merged, and both milestones
+turn green only once their test command passes. `copse demo --local` keeps the workers
+and reviewers on a local model (Ollama).
 
 `copse doctor` checks that everything copse needs is there (tmux, the agent CLIs,
 a writable home) and, in a repo, what's set up for it, and says what to do about
@@ -270,6 +276,7 @@ your own status line prints, so what you see doesn't change.
 |---|---|
 | `copse` | a fresh supervisor chat here, dashboard alongside |
 | `copse init` | detect setup and test commands, write `.copse/config.json`, check tools |
+| `copse demo [--local]` | watch copse finish a tiny practice repo: parallel workers, reviews, gated merges |
 | `copse new BRANCH [-b BASE] [-a PROFILE] [-p PROMPT]` | worktree + branch + agent |
 | `copse continue [ID]` / `copse -c` | resume a paused session (default: the most recent) |
 | `copse sessions` / `copse prune` | list paused sessions / apply the retention rules now and remove merged worktrees and leftover tmux sessions |
@@ -279,6 +286,7 @@ your own status line prints, so what you see doesn't change.
 | `copse transfer [REPO] [--from SESSION] [-b BRANCH]` | move a scratch session's work into a real repo |
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
+| `copse history --share [--session ID]` | a few lines about this session to paste into Slack or a post: goal, milestones verified, workers, merges, reviews (and how many by a different model), parallel speedup, tokens |
 | `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
 | `copse account [login\|logout\|status\|upgrade\|portal\|org]` | paid features: bare `copse account` shows what your plan has and how to get the rest (see "copse Pro and Team" below) |
 | `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
@@ -407,6 +415,7 @@ Autopilot, merge gates and cleanup:
 | `add_dirs` | `[]` | directories outside the worktree that Claude Code agents may use (`--add-dir`; full tool access, see "Directories outside the workspace") |
 | `local_models` | `true` | when a native profile points at Ollama on this machine and it isn't running, `copse` starts `ollama serve` in the background (with the context length the profiles need) and loads their models; `false` leaves it to you |
 | `sidebar` | `"left"` | where the dashboard sits in each window: `"left"` of the chat, or `"bottom"` (full-width rows under it) |
+| `pr_footer` | `true` | `copse pr` and `copse ci` end the PR description with one line: "🌲 Built in parallel and verified with copse" (a link). `false` leaves it out. Never added to commit messages |
 | `message_delivery` | `"pull"` | how agent and copse messages reach an interactive supervisor: `"pull"` keeps them unread and delivers one notice ("copse: 2 new messages (from 9f742c5c, pipeline). Call read_messages."; the sidebar shows an unread count), `"push"` delivers each message's text. Messages you send (`copse send`, typing) and messages to workers are always pushed |
 | `learning` | `"auto"` | which learning plugin records how worker tasks turned out and suggests profiles (see below): `"auto"` is copse Pro's hosted learning when your plan includes it and nothing otherwise; `"off"`; or an installed plugin's name |
 | `learning_candidates` | `[]` | the profile names a learning plugin may pick from |

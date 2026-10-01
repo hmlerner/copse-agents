@@ -266,7 +266,8 @@ def _push(ws: Workspace) -> None:
 
 def _create_pr(ws: Workspace, base: str, title: str, body: str) -> str:
     proc = subprocess.run(
-        ["gh", "pr", "create", "--base", base, "--head", ws.branch, "--title", title, "--body", body],
+        ["gh", "pr", "create", "--base", base, "--head", ws.branch, "--title", title,
+         "--body", workspaces.with_footer(body, ws.repo_root)],
         cwd=ws.path, capture_output=True, text=True)
     if proc.returncode != 0:
         raise CIError(f"gh pr create failed: {proc.stderr.strip() or proc.stdout.strip()}")

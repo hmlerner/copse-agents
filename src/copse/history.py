@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 
 from copse.db import DB, HistoryEntry
 from copse.usage import Usage, agent_usage, format_tokens
@@ -142,3 +144,92 @@ def row_summary(row: HistoryEntry, width: int = 60) -> str:
     text = (row.task or row.result or "").strip()
     line = text.splitlines()[0] if text else ""
     return line if len(line) <= width else line[: width - 1] + "…"
+
+
+def _plural(count: int, word: str, plural: str | None = None) -> str:
+    return f"{count} {word if count == 1 else plural or word + 's'}"
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    minutes = int(seconds // 60)
+    if minutes < 10:
+        return f"{minutes}m{int(seconds % 60):02d}s"
+    return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+
+
+def _provider(profile: str | None, repo_root: str) -> str | None:
+    from copse.profiles import load_profile
+
+    try:
+        return load_profile(profile, repo_root).provider if profile else None
+    except Exception:  # noqa: BLE001 - a profile since removed: unknown
+        return None
+
+
+def share_card(db: DB, root_id: str) -> str:
+    """A few plain lines about one session, to paste into Slack or a post:
+    the goal, milestones verified, workers, merges, reviews, time and tokens.
+    Only counts and the goal; no code, paths or branch names.
+
+    Built from the session's tasks and history rows, which outlive the
+    workers' and reviewers' agent rows (removed with their worktrees)."""
+    from copse import git
+
+    root = db.get_agent(root_id)
+    ws = db.get_workspace(root.workspace_id) if root else None
+    if root is None or ws is None:
+        raise KeyError(f"no session {root_id}")
+    callers, queue = {root_id}, [root_id]
+    while queue:
+        for child in db.children(queue.pop()):
+            callers.add(child.id)
+            queue.append(child.id)
+    tasks = [t for t in db.list_tasks(ws.repo_root)
+             if t.caller_id in callers and t.agent_id and t.state in ("started", "merged")]
+    branches = {t.branch for t in tasks if t.branch}
+    rows = [r for r in db.list_history(ws.repo_root, None, CAP_PER_REPO)
+            if r.ts >= root.created_at and (r.agent_id in callers or r.branch in branches)]
+
+    lines = [f"copse session · {os.path.basename(ws.repo_root)} · "
+             f"{time.strftime('%Y-%m-%d', time.localtime(root.created_at))}"]
+    ap = db.get_autopilot(root_id)
+    if ap and ap.goal:
+        lines.append(f"Goal: {ap.goal.strip().splitlines()[0]}")
+    ms = db.milestones(root_id)
+    if ms:
+        passed = sum(m.status == "passed" for m in ms)
+        lines.append(f"{'✓' if passed == len(ms) else '◐'} {passed}/{len(ms)} milestones "
+                     "verified by their check commands")
+
+    # Merged: the pipeline says so, or the base has the branch's merge
+    # commit (a branch can land through another that merged it first, and
+    # its ref is usually deleted by then).
+    merge_subjects = git.run(["log", "--merges", "--format=%s", f"--since=@{int(root.created_at)}",
+                              ws.branch], ws.repo_root, check=False).stdout
+    merged = sum(t.state == "merged" or bool(t.branch and f"Merge branch '{t.branch}'" in merge_subjects)
+                 for t in tasks)
+    reviews = [r for r in rows if r.kind == "review"]
+    worker_providers = {_provider(t.profile, ws.repo_root) for t in tasks}
+    other = sum(_provider(r.profile, ws.repo_root) not in worker_providers for r in reviews)
+    lines.append(f"{_plural(len(tasks), 'worker')} · {_plural(merged, 'branch', 'branches')} merged · "
+                 f"{_plural(len(reviews), 'review')}"
+                 + (f" ({other} by a different model)" if other else ""))
+
+    spans = []
+    for t in tasks:
+        ends = [r.ts for r in rows if r.agent_id == t.agent_id and r.kind == "worker_result"]
+        if ends:
+            spans.append((t.started_at or t.created_at, min(ends)))
+    if spans:
+        wall = max(e for _, e in spans) - min(s for s, _ in spans)
+        busy = sum(e - s for s, e in spans)
+        speed = (f" · {busy / wall:.1f}× parallel ({_duration(busy)} of worker time)"
+                 if wall > 0 and len(spans) > 1 else "")
+        lines.append(f"{_duration(wall)} elapsed{speed}")
+    total = sum(tokens_total(r.tokens) for r in rows)
+    if total:
+        lines.append(f"{format_tokens(total)} tokens")
+    lines.append("Built with copse: https://pawdelta.com/copse/")
+    return "\n".join(lines)

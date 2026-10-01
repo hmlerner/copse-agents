@@ -123,8 +123,8 @@ def init(
     typer.echo("")
     results = [c for c in doctor_mod.checks(root) if c.level != doctor_mod.OK]
     # Optional pieces (Codex, a local model, ...) are one line on a first run.
-    optional = [c.name for c in results if c.level == doctor_mod.WARN and "only needed" in c.detail]
-    shown = [c for c in results if c.name not in optional]
+    optional = [c.name for c in results if doctor_mod.is_optional(c)]
+    shown = [c for c in results if not doctor_mod.is_optional(c)]
     if shown:
         typer.echo(doctor_mod.render(shown))
     if optional:
@@ -133,6 +133,25 @@ def init(
         raise typer.Exit(1)
     typer.secho("Ready. Commit .copse/config.json, then run `copse` and tell the supervisor what to build.",
                 fg="green")
+
+
+@app.command()
+def demo(
+    local: bool = typer.Option(False, "--local", help="Workers and reviewers on a local model (Ollama) instead of Claude/Codex."),
+    attach: bool = typer.Option(True, "--attach/--no-attach"),
+) -> None:
+    """Watch copse work on a tiny practice repo: two workers in parallel, reviews, gated merges, verified milestones.
+
+    Creates a small Python repo under ~/.copse/demo/ with two failing test
+    files and a two-milestone goal, then starts the supervisor there with
+    autopilot on. Takes a few minutes; nothing is created where you run it."""
+    from copse import demo as demo_mod
+
+    root = demo_mod.create(local=local)
+    typer.echo(f"demo repo: {root}")
+    os.chdir(root)
+    start(agent="supervisor", prompt=None, provider=None, attach=attach, watch=True,
+          autopilot=True, branch=None, worktree=None)
 
 
 @app.command()
@@ -213,10 +232,10 @@ def start(
         ws = _run(workspaces.checkout_for, db, os.getcwd(), branch=branch, worktree=worktree)
     else:
         ws = _here_or_scratch(db, reuse_scratch=False)
+    _preflight(agent, provider, ws.repo_root)
     # Nothing slow before the chat starts: the paused session's leftover
     # processes, old paused sessions' worktrees and the pool refill are all
     # handled by the detached cull.
-    _preflight(agent, provider, ws.repo_root)
     _pause_running(db, ws, stop_procs=False)
     if autopilot is None:
         autopilot = agent == "supervisor" and _run(load_repo_config, ws.repo_root).autopilot
@@ -651,9 +670,15 @@ def history(
         None, "--kind", help=f"Only this kind: one of {', '.join(history_mod.KINDS)}."
     ),
     all_repos: bool = typer.Option(False, "--all", help="Every repo, not just this one."),
+    share: bool = typer.Option(False, "--share", help="Summarize this repo's session in a few lines to paste into Slack or a post."),
+    session: Optional[str] = typer.Option(None, "--session", help="With --share: this session (an id from `copse sessions`) instead of the current one."),
 ) -> None:
     """Durable history of worker results, reviews, merges and milestone checks."""
     db = DB()
+    if share:
+        root_id = session or _session_root(db)
+        typer.echo(_run(history_mod.share_card, db, root_id))
+        return
     repo_root = None
     if not all_repos:
         try:
