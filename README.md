@@ -493,6 +493,42 @@ key) that the server can't reverse. Never the task text, prompts, diffs,
 file names, paths or branch names. See `src/copse/pro/learning.py` and
 `src/copse/pro/team_events.py` for the exact payloads.
 
+### Copse-CI: issues into pull requests
+
+copse Team can run copse with nobody at a terminal. `copse ci run` cuts a
+`copse/ci-<issue or slug>` branch, starts a supervisor with autopilot on in a
+detached tmux session, gives it the goal, and waits until every milestone's
+check passes. Then it pushes the branch and opens the pull request with `gh`
+(the body lists the goal, the milestones and their checks, and `Closes #N`
+for an issue), prints the PR URL and exits 0. It exits 1, with what happened,
+when the supervisor asks for a decision (`need_user`: the question is the
+reason), stalls, or runs out of time. The session and its workers are always
+stopped at the end, and a JSON summary goes to `$GITHUB_STEP_SUMMARY` when
+that is set.
+
+```sh
+copse ci run --issue 42                      # the goal is the issue's title and body
+copse ci run --goal "Add a /health endpoint" # or typed; a goals.md-shaped text brings its milestones
+copse ci run --goal-file .copse/goals.md --timeout 90 --max-workers 2 --base develop --no-pr
+copse ci init --label copse                  # the GitHub Actions workflow (see below)
+```
+
+With `--issue` and `--goal`, the supervisor derives the milestones and their
+checks itself; a goals.md-shaped goal (`# Goal`, `## Milestone`, `check:`) is
+recorded as written. `--max-workers` sets `max_agents` in the repo's
+`.copse/config.local.json`.
+
+`copse ci init` writes `.github/workflows/copse.yml`, which runs on
+`workflow_dispatch` and whenever an issue gets the label (`copse` by
+default): it installs tmux, copse (`uv tool install copse-agents`) and Claude
+Code, and runs `copse ci run --issue <number>`. It won't overwrite an existing
+file without `--force`. The workflow needs two secrets, `COPSE_PRO_TOKEN` (a
+copse Team CI token: `copse ci run` exchanges it for an entitlement in memory
+and never writes it to disk) and `ANTHROPIC_API_KEY`, and the repo's Actions
+settings must allow GitHub Actions to create pull requests. A PR opened with
+the workflow's own `GITHUB_TOKEN` doesn't trigger the repo's other workflows;
+use a personal access token as `GH_TOKEN` if you need CI to run on it.
+
 **Closing and cleaning up.** Press `x` on an agent in the sidebar (twice for one
 that's still running) or run `copse close <id>` to stop it and hide it. Stopping means
 every process of the agent, not just its window: Claude Code can host a session in its

@@ -935,6 +935,53 @@ def mcp() -> None:
     main()
 
 
+# -- copse ci (copse Team) ---------------------------------------------------
+
+ci_app = typer.Typer(no_args_is_help=True,
+                     help="Run copse headless in CI: an issue in, a pull request out (copse Team).")
+app.add_typer(ci_app, name="ci")
+
+
+@ci_app.command("run")
+def ci_run(
+    goal: Optional[str] = typer.Option(None, "--goal", help="The goal, as text (a goals.md-shaped text brings its milestones)."),
+    goal_file: Optional[str] = typer.Option(None, "--goal-file", help="Read the goal from this file (goals.md format or plain text)."),
+    issue: Optional[int] = typer.Option(None, "--issue", help="Take the goal from this GitHub issue (title and body, via gh); the PR closes it."),
+    timeout: float = typer.Option(60, "--timeout", help="Minutes to wait for every milestone to be verified."),
+    max_workers: Optional[int] = typer.Option(None, "--max-workers", help="Cap on workers running at once (sets max_agents in .copse/config.local.json)."),
+    base: Optional[str] = typer.Option(None, "--base", help="Branch to cut the work from and open the PR against (default: the repo's base)."),
+    no_pr: bool = typer.Option(False, "--no-pr", help="Don't push or open a pull request; just report."),
+) -> None:
+    """Run a supervisor with autopilot on, unattended, until the goal is verified; then open a PR.
+
+    The work happens on a fresh `copse/ci-<issue or slug>` branch. Exits 0
+    with the PR URL when every milestone's check passes; otherwise exits 1
+    with what happened (the supervisor's question, a stall, the timeout).
+    Needs the `ci` feature (copse Team); in CI, set COPSE_PRO_TOKEN."""
+    from copse import ci
+
+    raise typer.Exit(ci.run_cli(goal=goal, goal_file=goal_file, issue=issue, timeout_min=timeout,
+                                max_workers=max_workers, base=base, pr=not no_pr, echo=typer.echo))
+
+
+@ci_app.command("init")
+def ci_init(
+    label: str = typer.Option("copse", "--label", help="Issues given this label start a run."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing workflow file."),
+) -> None:
+    """Write .github/workflows/copse.yml: `copse ci run` on labelled issues and on demand."""
+    from copse import ci
+
+    root = _run(git.main_repo_root, os.getcwd())
+    try:
+        path = ci.init(root, label=label, force=force)
+    except ci.CIError as e:
+        _fail(str(e))
+    typer.echo(f"wrote {path}")
+    typer.echo("Add the COPSE_PRO_TOKEN and ANTHROPIC_API_KEY secrets, and allow GitHub Actions "
+               "to create pull requests in the repo's Actions settings.")
+
+
 # -- internal ----------------------------------------------------------------
 
 
