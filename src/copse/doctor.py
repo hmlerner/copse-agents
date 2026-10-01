@@ -132,6 +132,12 @@ def checks(repo_root: str | None) -> list[Check]:
                                      "missing --add-dir, so agents won't reach it"))
                 else:
                     out.append(Check(OK, "add_dirs", ", ".join(profile.add_dirs or [])))
+            if cfg.services:
+                docker = shutil.which("docker")
+                names = ", ".join(str(s.get("name")) for s in cfg.services)
+                out.append(Check(OK if docker else WARN, "docker",
+                                 f"{docker} (services: {names})" if docker else
+                                 f"not found: per-worktree services ({names}) won't start"))
             if (Path(repo_root) / "graphify-out" / "graph.json").is_file():
                 out.append(Check(OK, "code map", "graphify-out/graph.json"))
             else:
