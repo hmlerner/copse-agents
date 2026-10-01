@@ -81,7 +81,11 @@ check: python3 -m unittest tests.test_wrap -q
 
 def _config(local: bool) -> dict:
     cfg = {
-        "checks": ["python3 -m unittest -q"],
+        # What every branch must pass to merge. Not the whole suite: until both
+        # milestones land, each branch still has the other's failing stub, and
+        # the demo is about two branches merging on their own. The milestone
+        # checks are what verify the behaviour.
+        "checks": ["python3 -m compileall -q textkit tests"],
         "max_agents": 2,
         "fetch": False,
         # The demo shows the whole loop, so approved branches merge on their own.

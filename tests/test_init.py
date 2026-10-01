@@ -166,7 +166,9 @@ def test_demo_repo_has_failing_goal(copse_home):
     plan = autopilot.load_goals_file(str(root))
     assert [m[1] for m in plan.milestones] == ["python3 -m unittest tests.test_slug -q",
                                                "python3 -m unittest tests.test_wrap -q"]
-    assert load_repo_config(root).checks == ["python3 -m unittest -q"]
+    # Each branch can pass the merge check alone; the milestone checks fail until the work is done.
+    check = load_repo_config(root).checks[0].split()
+    assert subprocess.run(check, cwd=root, capture_output=True).returncode == 0
     assert subprocess.run(["python3", "-m", "unittest", "-q"], cwd=root, capture_output=True).returncode != 0
     assert subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True).stdout == ""
     assert demo.create() != root
