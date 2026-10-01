@@ -563,3 +563,67 @@ def test_portal_for_a_team_org(team):
     team.routes[f"POST /billing/portal?org_id={ORG}"] = [(200, {"url": "https://billing.stripe.test/p/t"})]
     code, out, _ = run(team, "portal", "--org", ORG)
     assert code == 0 and out.strip() == "https://billing.stripe.test/p/t"
+
+
+# -- org CI tokens ---------------------------------------------------------------------------------
+
+
+def test_ci_token_create_list_revoke(team):
+    secret = "cpc_" + "c" * 43
+    token_id = "ct_" + "a" * 32
+    seen = []
+
+    def create(form, headers):
+        seen.append(form)
+        return 200, {"token": secret, "token_id": token_id, "org_id": ORG, "name": form["name"],
+                     "created_at": 1_900_000_000}
+
+    team.routes[f"POST /orgs/{ORG}/ci-tokens"] = create
+    team.routes[f"GET /orgs/{ORG}/ci-tokens"] = lambda f, h: (200, {"org_id": ORG, "tokens": [
+        {"token_id": token_id, "name": "github actions", "created_by": "user_1",
+         "created_at": 1_900_000_000, "last_used_at": None, "status": "active"}]})
+    team.routes[f"DELETE /orgs/{ORG}/ci-tokens/{token_id}"] = lambda f, h: (
+        200, {"org_id": ORG, "token_id": token_id, "status": "revoked"})
+
+    code, out, err = run(team, "org", "ci-token", "create", "github", "actions", "--org", ORG)
+    assert code == 0, err
+    assert seen == [{"name": "github actions"}]
+    assert secret in out and "COPSE_PRO_TOKEN" in out and "shown once" in out
+    assert team.store.load().get("ci_token") is None and secret not in json.dumps(team.store.load())
+
+    code, out, _ = run(team, "org", "ci-token", "list", "--org", ORG)
+    assert code == 0 and token_id in out and "github actions" in out and "active" in out
+    assert secret not in out
+
+    code, out, _ = run(team, "org", "ci-token", "revoke", token_id, "--org", ORG)
+    assert code == 0 and f"Revoked CI token {token_id}" in out
+    assert [c[0] for c in team.calls if "ci-tokens" in c[0]] == [
+        f"POST /orgs/{ORG}/ci-tokens", f"GET /orgs/{ORG}/ci-tokens", f"DELETE /orgs/{ORG}/ci-tokens/{token_id}"]
+
+
+def test_ci_token_defaults_to_the_current_org_and_needs_one(team):
+    code, _, err = run(team, "org", "ci-token", "list")
+    assert code == 1 and "no team org selected" in err
+    team.store.save({**team.store.load(), "org_id": ORG})
+    team.routes[f"GET /orgs/{ORG}/ci-tokens"] = lambda f, h: (200, {"org_id": ORG, "tokens": []})
+    code, out, _ = run(team, "org", "ci-token", "list")
+    assert code == 0 and "no CI tokens" in out
+
+
+def test_ci_token_errors_and_usage(team):
+    team.routes[f"POST /orgs/{ORG}/ci-tokens"] = lambda f, h: (
+        403, {"error": "forbidden", "error_description": "requires the admin role"})
+    code, _, err = run(team, "org", "ci-token", "create", "deploy", "--org", ORG)
+    assert code == 1 and "forbidden" in err and "admin" in err
+    code, _, err = run(team, "org", "ci-token", "revoke", "not-an-id", "--org", ORG)
+    assert code == 1 and "invalid CI token id" in err
+    for bad in (("org", "ci-token"), ("org", "ci-token", "create"), ("org", "ci-token", "list", "x"),
+                ("org", "ci-token", "revoke"), ("org", "ci-token", "rotate", "x"),
+                ("org", "ci-token", "list", "--admin")):
+        assert run(team, *bad)[0] == 2, bad
+
+
+def test_ci_token_create_refuses_a_response_without_a_token(team):
+    team.routes[f"POST /orgs/{ORG}/ci-tokens"] = lambda f, h: (200, {"token_id": "ct_1", "name": "x"})
+    code, _, err = run(team, "org", "ci-token", "create", "x", "--org", ORG)
+    assert code == 1 and "no CI token" in err

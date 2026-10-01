@@ -314,36 +314,76 @@ def test_step_summary_is_json(db, repo, monkeypatch, tmp_path):
 # -- the entitlement gate ----------------------------------------------------------
 
 
-def ci_backend(backend, features):
-    backend.routes["GET /entitlement"] = lambda f, h: (
-        200, {"entitlement": sign(backend.key, claims(plan="team", features=features))})
-    return auth.Client(BASE, transport=backend)
-
-
-def test_token_from_env_is_exchanged_in_memory(backend, monkeypatch, copse_home):
-    client = ci_backend(backend, ["learning", "team", "ci"])
-    monkeypatch.setenv("COPSE_PRO_TOKEN", backend.issue()["refresh_token"])
+def test_ci_token_from_env_is_exchanged_in_memory(backend, monkeypatch, copse_home):
+    client = auth.Client(BASE, transport=backend)
+    token = backend.issue_ci_token()
+    monkeypatch.setenv("COPSE_PRO_TOKEN", token)
     ent = ci.require_ci(client)
-    assert "ci" in ent.features and ent.plan == "team"
-    assert "POST /token/refresh" in backend.paths() and "GET /entitlement" in backend.paths()
+    assert "ci" in ent.features and ent.plan == "team" and ent.org_id == "org_team"
+    assert ent.sub == "ci:ct_1" and ent.role == "member"
+    assert backend.paths() == ["POST /ci/entitlement"]
+    assert backend.calls[0][2]["Authorization"] == "Bearer " + token
     # Nothing was written: no credentials, no file under the home.
     assert credentials.default_store().load() is None
     assert not (copse_home / "pro").exists()
 
 
-def test_token_without_ci_feature_is_refused(backend, monkeypatch):
-    client = ci_backend(backend, ["learning", "autopilot"])
-    monkeypatch.setenv("COPSE_PRO_TOKEN", backend.issue()["refresh_token"])
+def test_ci_token_works_on_every_run(backend, monkeypatch):
+    """Unlike a refresh token, the CI token doesn't rotate: the same secret keeps working."""
+    client = auth.Client(BASE, transport=backend)
+    monkeypatch.setenv("COPSE_PRO_TOKEN", backend.issue_ci_token())
+    for _ in range(3):
+        assert "ci" in ci.require_ci(client).features
+    assert backend.paths() == ["POST /ci/entitlement"] * 3
+
+
+def test_revoked_ci_token_is_refused_without_leaking_it(backend, monkeypatch):
+    client = auth.Client(BASE, transport=backend)
+    token = backend.issue_ci_token()
+    backend.ci_tokens[token] = "revoked"
+    monkeypatch.setenv("COPSE_PRO_TOKEN", token)
+    with pytest.raises(ci.CIError) as e:
+        ci.require_ci(client)
+    assert "invalid_token" in str(e.value) and token not in str(e.value)
+    assert "ci-token create" in str(e.value)
+
+
+def test_ci_token_without_ci_feature_is_refused(backend, monkeypatch):
+    client = auth.Client(BASE, transport=backend)
+    backend.ci_features = ["learning", "services"]
+    monkeypatch.setenv("COPSE_PRO_TOKEN", backend.issue_ci_token())
     with pytest.raises(ci.CIError, match="copse Team"):
         ci.require_ci(client)
 
 
-def test_bad_token_is_refused_without_leaking_it(backend, monkeypatch):
-    client = ci_backend(backend, ["ci"])
-    monkeypatch.setenv("COPSE_PRO_TOKEN", "cpr_stolen")
+def test_plan_lapsed_is_refused(backend, monkeypatch):
+    client = auth.Client(BASE, transport=backend)
+    backend.routes["POST /ci/entitlement"] = [(403, {"error": "entitlement_required"})]
+    monkeypatch.setenv("COPSE_PRO_TOKEN", "cpc_" + "x" * 43)
+    with pytest.raises(ci.CIError, match="entitlement_required"):
+        ci.require_ci(client)
+
+
+def test_forged_entitlement_is_refused(backend, monkeypatch):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    client = auth.Client(BASE, transport=backend)
+    forged = sign(Ed25519PrivateKey.generate(), claims(plan="team", features=["ci"]))
+    backend.routes["POST /ci/entitlement"] = [(200, {"entitlement": forged})]
+    monkeypatch.setenv("COPSE_PRO_TOKEN", "cpc_" + "x" * 43)
+    with pytest.raises(ci.CIError, match="signature"):
+        ci.require_ci(client)
+
+
+def test_refresh_token_in_env_is_refused_without_a_call(backend, monkeypatch):
+    """A refresh token would work once (the backend rotates it), so it isn't sent at all."""
+    client = auth.Client(BASE, transport=backend)
+    refresh = backend.issue()["refresh_token"]
+    monkeypatch.setenv("COPSE_PRO_TOKEN", refresh)
     with pytest.raises(ci.CIError) as e:
         ci.require_ci(client)
-    assert "invalid_grant" in str(e.value) and "cpr_stolen" not in str(e.value)
+    assert "not_a_ci_token" in str(e.value) and refresh not in str(e.value)
+    assert backend.paths() == []
 
 
 def test_not_logged_in_says_how(monkeypatch):
@@ -414,6 +454,8 @@ def test_init_writes_a_workflow_and_respects_force(repo):
     assert "uv tool install copse-agents" in text
     assert "npm install -g @anthropic-ai/claude-code" in text
     assert "COPSE_PRO_TOKEN: ${{ secrets.COPSE_PRO_TOKEN }}" in text
+    assert "copse account org ci-token create" in text
+    assert "trust with write access" in text and "GITHUB_TOKEN don't trigger" in text
     assert "copse ci run --issue ${{ github.event.issue.number || inputs.issue }}" in text
     assert "{{{{" not in text and "}}}}" not in text
     # Every line is a YAML-shaped line: a comment, blank, or `key:` / `- item` text.
