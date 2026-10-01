@@ -48,8 +48,10 @@ def proc_cleanup():
     for p in started:
         try:
             os.killpg(p.pid, signal.SIGKILL)  # the stand-in and the child it started
-        except ProcessLookupError:
-            pass
+        except (ProcessLookupError, PermissionError):
+            # Already gone, or (macOS) a group whose exited leader isn't reaped yet.
+            p.kill()
+        p.wait(timeout=5)
 
 
 def test_stop_finds_the_agent_and_what_it_started(proc_cleanup):
