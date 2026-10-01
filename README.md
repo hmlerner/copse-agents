@@ -3,24 +3,35 @@
 *[pawdelta.com/copse](https://pawdelta.com/copse/) · Published on PyPI as `copse-agents`; the command is `copse`. This project is
 unrelated to the Copse desktop app at copse.dev.*
 
-A supervisor for your coding agents. copse runs Claude Code, Codex, and
-its own loop over any open-weight model side by side in tmux, gives each agent its own git worktree and branch, and
-lets a supervisor agent split up work, hand it out, review each branch, and
-merge the results. Nobody edits the same files, and nothing lands without
-review.
+A supervisor for your coding agents that won't call work done until it's proven.
+copse runs Claude Code, Codex and open-weight models side by side, each in its own
+git worktree. A supervisor agent splits up the work and hands it out. Each branch
+merges only after a reviewer, on a different model when one is available, approves
+that exact commit and your checks pass. A goal is done only when its check commands
+exit 0.
 
-- **Parallel agents, no collisions.** Every workspace is a separate worktree on
-  its own branch, cut from a freshly fetched base, with its own block of ports
-  for dev servers.
+```sh
+curl -fsSL pawdelta.com/copse/install | sh
+copse demo        # watch it finish a practice repo in a few minutes
+```
+
+- **Done means a command passed.** A goal is split into milestones, each with a
+  check command that copse runs itself. A milestone is verified when its check exits
+  0, re-run after later merges to catch regressions, never when a model says so.
+- **Reviewed before it merges.** A reviewer approves the exact sha, then
+  pre-commit and your `checks` run. Codex reviews Claude's work (or a local model
+  does) when available. Nothing reaches your default branch on its own.
+- **Parallel agents, no collisions.** Every worker gets its own worktree and
+  branch, cut from a freshly fetched base, with its own block of ports and
+  optional per-worktree databases (copse Pro).
 - **Delegation built in.** Agents get a `copse` MCP server: `assign` work to
-  parallel workers, `handoff` a task and wait for it (in bounded steps, with
-  `wait_for_worker` to keep waiting), `send_message` between agents, then
-  `workspace_diff`, `merge_workspace`, and `remove_workspace`.
-- **The whole branch lifecycle.** Diff against the base, sync (rebase or
-  merge), commit, push, open a PR, merge back. Removal refuses to throw away
-  uncommitted work and keeps the branch unless you say otherwise.
-- **Per-repo setup.** `.copse/config.json` defines setup and teardown scripts
-  and which local files (like `.env`) to copy into new workspaces.
+  parallel workers with the files they'll touch and what they depend on, `handoff`
+  and wait, `send_message`, then review and merge without spending the supervisor's turns.
+- **Walk away.** Autopilot keeps going until every milestone is verified, pauses
+  at your usage limit and resumes after the reset, and asks you only when it
+  needs a decision. Quit and `copse continue` later; workers resume too.
+- **Any model, including local ones.** Claude Code, Codex, Google Antigravity, or
+  copse's own agent loop over Ollama or any OpenAI- or Anthropic-style endpoint.
 - **Reliable status.** copse knows whether each agent is working, idle, or
   waiting for your approval from the agent's own lifecycle hooks, not by
   scraping the terminal.
