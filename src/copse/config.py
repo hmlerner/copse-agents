@@ -184,7 +184,7 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
 TEMPLATE = {
     "setup": [],
     "teardown": [],
-    "copy": [".env"],
+    "copy": [],
     "base_branch": None,
     "branch_prefix": "",
     "default_agent": "developer",
@@ -193,12 +193,14 @@ TEMPLATE = {
 }
 
 
-def write_template(repo_root: str | Path) -> Path:
+def write_template(repo_root: str | Path, values: dict | None = None) -> Path:
+    """Write ``.copse/config.json`` (the template, with ``values`` over it)
+    unless it already exists, and the ``.gitignore`` for the local file."""
     base = Path(repo_root) / CONFIG_DIR
     base.mkdir(parents=True, exist_ok=True)
     path = base / CONFIG_FILE
     if not path.exists():
-        path.write_text(json.dumps(TEMPLATE, indent=2) + "\n", encoding="utf-8")
+        path.write_text(json.dumps({**TEMPLATE, **(values or {})}, indent=2) + "\n", encoding="utf-8")
     ignore = base / ".gitignore"
     if not ignore.exists():
         ignore.write_text(f"{LOCAL_CONFIG_FILE}\n", encoding="utf-8")

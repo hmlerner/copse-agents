@@ -44,6 +44,33 @@ def _tool(name: str, required: bool, why: str, version_args: list[str] | None = 
     return Check(OK, name, f"{path}" + (f" ({version[:40]})" if version else ""))
 
 
+CLI_INSTALL = {
+    "claude": ("Claude Code", "npm install -g @anthropic-ai/claude-code (or see https://code.claude.com)"),
+    "codex": ("Codex", "npm install -g @openai/codex"),
+    "antigravity": ("Google Antigravity", "see https://antigravity.google"),
+}
+
+
+def preflight(provider: str) -> list[str]:
+    """What stops a chat on ``provider`` from starting at all, as lines to
+    print, so a first run fails before anything launches instead of leaving
+    an empty tmux window. Empty when it can start."""
+    from copse import antigravity, providers
+
+    problems = []
+    if not shutil.which("tmux"):
+        problems.append("tmux isn't installed: copse runs every agent in a tmux window. "
+                        "Install: brew install tmux (Debian/Ubuntu: sudo apt install tmux)")
+    binary = {"claude": providers.claude_binary, "codex": providers.codex_binary,
+              "antigravity": antigravity.binary}.get(provider)
+    if binary:
+        exe = binary()
+        if not (shutil.which(exe) or os.path.isfile(exe)):
+            name, how = CLI_INSTALL[provider]
+            problems.append(f"{name} (`{exe}`) isn't on PATH: the chat runs on it. Install: {how}")
+    return problems
+
+
 def checks(repo_root: str | None) -> list[Check]:
     from copse import config, procs, tmux
     from copse.db import DB
@@ -52,10 +79,12 @@ def checks(repo_root: str | None) -> list[Check]:
     v = sys.version_info
     out.append(Check(OK if v >= (3, 11) else FAIL, "python",
                      f"{v.major}.{v.minor}.{v.micro}" + ("" if v >= (3, 11) else " (copse needs 3.11 or newer)")))
-    out.append(_tool("tmux", True, "copse runs every agent in a tmux window", ["-V"], "brew install tmux"))
+    out.append(_tool("tmux", True, "copse runs every agent in a tmux window", ["-V"],
+                     "brew install tmux (Debian/Ubuntu: sudo apt install tmux)"))
     out.append(_tool("claude", True, "the supervisor and the built-in profiles use Claude Code",
-                     install="see https://code.claude.com"))
-    out.append(_tool("codex", False, "only needed for Codex agents (reviewer-codex)"))
+                     install=CLI_INSTALL["claude"][1]))
+    out.append(_tool("codex", False, "only needed for Codex agents (reviewer-codex)",
+                     install=CLI_INSTALL["codex"][1]))
     out.append(_tool("agy", False, "only needed for Google Antigravity agents"))
     out.append(_tool("gh", False, "only needed for `copse pr` and `copse new --pr`"))
     out.append(_tool("pre-commit", False, "only needed if the repo uses pre-commit hooks"))

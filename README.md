@@ -28,10 +28,20 @@ review.
 ## Install
 
 ```sh
-brew install tmux
-uv tool install copse-agents                  # once published
-uv tool install --editable ~/Projects/copse   # from a local checkout
+curl -fsSL https://pawdelta.com/copse/install.sh | sh
 ```
+
+The script ([scripts/install.sh](scripts/install.sh)) installs uv and tmux if
+they're missing, then copse, then runs `copse doctor`. Run it again to upgrade.
+To do it by hand:
+
+```sh
+brew install tmux                             # Debian/Ubuntu: sudo apt install tmux
+uv tool install copse-agents
+uv tool install --editable ~/Projects/copse   # or from a local checkout
+```
+
+copse drives Claude Code, so you need that too (`npm install -g @anthropic-ai/claude-code`).
 
 `copse --version` prints the installed version; the tmux status bar of every copse
 session shows it too (`copse 0.11.5`). A session started before an upgrade keeps
@@ -39,14 +49,23 @@ running the old code, and shows the old number, until you restart it.
 
 ## Quick start
 
-`copse doctor` checks that everything copse needs is there (tmux, the agent CLIs,
-a writable home) and, in a repo, what's set up for it, and says what to do about
-anything missing.
-
 ```sh
 cd ~/code/myapp
+copse init      # once per repo
 copse
 ```
+
+`copse init` reads your lockfiles and manifests (uv, Poetry, npm/pnpm/yarn/bun,
+Cargo, Go, Bundler, a Makefile) and writes `.copse/config.json` with the
+`setup` a new worktree needs, the `checks` that must pass before a branch merges,
+and the git-ignored env files to `copy` into each worktree. It shows what it found
+before writing, never touches an existing config, and finishes with the same checks
+as `copse doctor`. Commit the config so your team gets it too.
+
+`copse doctor` checks that everything copse needs is there (tmux, the agent CLIs,
+a writable home) and, in a repo, what's set up for it, and says what to do about
+anything missing. Bare `copse` runs the essential ones (tmux, the chat's CLI)
+before it launches anything.
 
 That's it. `copse` opens a supervisor chat (Claude Code) in your repo, with a
 narrow sidebar on the left showing every agent: who's working, who's idle, and
@@ -250,7 +269,7 @@ your own status line prints, so what you see doesn't change.
 | | |
 |---|---|
 | `copse` | a fresh supervisor chat here, dashboard alongside |
-| `copse init` | write a starter `.copse/config.json` |
+| `copse init` | detect setup and test commands, write `.copse/config.json`, check tools |
 | `copse new BRANCH [-b BASE] [-a PROFILE] [-p PROMPT]` | worktree + branch + agent |
 | `copse continue [ID]` / `copse -c` | resume a paused session (default: the most recent) |
 | `copse sessions` / `copse prune` | list paused sessions / apply the retention rules now and remove merged worktrees and leftover tmux sessions |
