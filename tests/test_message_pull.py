@@ -2,6 +2,7 @@
 unread behind one notice until read_messages (no real CLIs)."""
 
 import json
+import re
 import time
 
 import pytest
@@ -39,6 +40,23 @@ def pushed(monkeypatch):
     return out
 
 
+def _bare(notice: str) -> str:
+    """A notice without the time that keeps notices from reading the same."""
+    return re.sub(r"^copse \(\d\d:\d\d:\d\d\): ", "copse: ", notice)
+
+
+def test_notices_never_read_the_same(db, boss, pushed, monkeypatch):
+    # Claude Code drops a peer message identical to the previous one, so a
+    # resent notice for the same unread messages must still differ.
+    clock = iter(["16:25:03", "16:27:04"])
+    monkeypatch.setattr(agents.time, "strftime", lambda fmt, *a: next(clock))
+    agents.send_message(db, "boss", "one", sender_id="w1")
+    _age_notices(db, db.NOTICE_TTL + 1)
+    agents.send_message(db, "boss", "two", sender_id="w1")
+    assert pushed == ["copse (16:25:03): 1 new message (from w1). Call read_messages.",
+                      "copse (16:27:04): 2 new messages (from w1). Call read_messages."]
+
+
 def set_delivery(repo, value):
     (repo / ".copse").mkdir(exist_ok=True)
     (repo / ".copse" / "config.json").write_text(json.dumps({"message_delivery": value}))
@@ -47,7 +65,7 @@ def set_delivery(repo, value):
 def test_notice_instead_of_body(db, boss, pushed):
     agents.send_message(db, "boss", "the secret result", sender_id="w1")
     assert len(pushed) == 1
-    assert pushed[0] == "copse: 1 new message (from w1). Call read_messages."
+    assert _bare(pushed[0]) == "copse: 1 new message (from w1). Call read_messages."
     assert "secret" not in pushed[0]
     assert db.unread_count("boss") == 1
 
@@ -119,7 +137,7 @@ def test_stale_notice_is_resent_on_new_message(db, boss, pushed):
     _age_notices(db, db.NOTICE_TTL + 1)  # the first notice was lost
     agents.send_message(db, "boss", "three", sender_id="w1")
     assert len(pushed) == 2
-    assert pushed[1] == "copse: 3 new messages (from w1). Call read_messages."
+    assert _bare(pushed[1]) == "copse: 3 new messages (from w1). Call read_messages."
 
 
 def test_stop_hook_resends_stale_notice_once(db, boss, pushed):
@@ -136,6 +154,6 @@ def test_stop_hook_hands_over_lost_notice(db, boss, monkeypatch):
     db.enqueue_held("boss", "body", "w1")
     out = agents.handle_hook(db, "boss", "stop", {})
     assert out["decision"] == "block"
-    assert out["reason"] == "copse: 1 new message (from w1). Call read_messages."
+    assert _bare(out["reason"]) == "copse: 1 new message (from w1). Call read_messages."
     # The notice is now outstanding: a second stop doesn't repeat it.
     assert not agents.handle_hook(db, "boss", "stop", {})
