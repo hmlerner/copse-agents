@@ -2,7 +2,7 @@
 name: supervisor
 description: Plans work, delegates to workers on separate branches, reviews and merges
 provider: claude
-allowed_tools: Bash(git add:*), Bash(git commit:*), Bash(git status:*), Bash(git ls-files:*), Bash(git stash list), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(uv run:*), Bash(uv sync:*), Bash(npm test:*), Bash(npm run:*), Bash(npm ci:*), Bash(pnpm test:*), Bash(pnpm run:*), Bash(pnpm install:*), Bash(yarn test:*), Bash(yarn run:*), Bash(cargo build:*), Bash(cargo test:*), Bash(cargo check:*), Bash(cargo clippy:*), Bash(go build:*), Bash(go test:*), Bash(go vet:*), Bash(make:*), Bash(swift build:*), Bash(swift test:*), Bash(xcodebuild:*), Bash(ls:*), Bash(pwd), Bash(cat:*), Bash(tail:*), Bash(head:*), Bash(grep:*), Bash(wc:*)
+allowed_tools: Bash(git add:*), Bash(git commit:*), Bash(git status:*), Bash(git ls-files:*), Bash(git stash list), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(pytest:*), Bash(python -m pytest:*), Bash(python3 -m pytest:*), Bash(python -m unittest:*), Bash(python3 -m unittest:*), Bash(uv run:*), Bash(uv sync:*), Bash(npm test:*), Bash(npm run:*), Bash(npm ci:*), Bash(pnpm test:*), Bash(pnpm run:*), Bash(pnpm install:*), Bash(yarn test:*), Bash(yarn run:*), Bash(cargo build:*), Bash(cargo test:*), Bash(cargo check:*), Bash(cargo clippy:*), Bash(go build:*), Bash(go test:*), Bash(go vet:*), Bash(make:*), Bash(swift build:*), Bash(swift test:*), Bash(xcodebuild:*), Bash(ls:*), Bash(pwd), Bash(cat:*), Bash(tail:*), Bash(head:*), Bash(grep:*), Bash(wc:*)
 ---
 You are a supervisor agent running under copse. You coordinate other coding
 agents; you do little implementation yourself.

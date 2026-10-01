@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -87,11 +88,70 @@ def _run(fn, *args, **kwargs):
 
 
 @app.command()
-def init() -> None:
-    """Write a starter .copse/config.json in this repo."""
-    root = _run(git.main_repo_root, os.getcwd())
-    path = write_template(root)
-    typer.echo(f"wrote {path}")
+def init(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Write the config without asking."),
+) -> None:
+    """Set copse up in this repo: detect setup and test commands, write .copse/config.json, check the tools.
+
+    Reads the repo's lockfiles and manifests to fill in `setup` (what a new
+    worktree needs), `checks` (what must pass before a branch merges) and
+    `copy` (git-ignored env files), then runs the same checks as `copse
+    doctor`. An existing config is left alone."""
+    from copse import detect, doctor as doctor_mod
+    from copse.config import CONFIG_DIR, CONFIG_FILE
+
+    try:
+        root = git.main_repo_root(os.getcwd())
+    except git.GitError:
+        _fail("not in a git repo. Run `git init` first, or just run `copse`: "
+              "outside a repo it starts a scratch session you can transfer later.")
+    path = Path(root) / CONFIG_DIR / CONFIG_FILE
+    found = detect.detect(root)
+    typer.echo(f"detected: {', '.join(found.stacks) or 'no known stack'}")
+    values = {"setup": found.setup, "checks": found.checks, "copy": found.copy}
+    for key, cmds in values.items():
+        typer.echo(f"  {key:<7} {'; '.join(cmds) if cmds else '-'}")
+    for note in found.notes:
+        typer.secho(f"  ! {note}", fg="yellow")
+    if path.exists():
+        typer.echo(f"kept {path} (it already exists; add anything above it's missing)")
+    else:
+        if sys.stdin.isatty() and not yes:
+            typer.confirm(f"write {path.relative_to(root)}?", default=True, abort=True)
+        write_template(root, values)
+        typer.secho(f"✓ wrote {path}", fg="green")
+    typer.echo("")
+    results = [c for c in doctor_mod.checks(root) if c.level != doctor_mod.OK]
+    # Optional pieces (Codex, a local model, ...) are one line on a first run.
+    optional = [c.name for c in results if doctor_mod.is_optional(c)]
+    shown = [c for c in results if not doctor_mod.is_optional(c)]
+    if shown:
+        typer.echo(doctor_mod.render(shown))
+    if optional:
+        typer.echo(f"optional, not set up: {', '.join(optional)} (`copse doctor` says how)")
+    if any(c.level == doctor_mod.FAIL for c in results):
+        raise typer.Exit(1)
+    typer.secho("Ready. Commit .copse/config.json, then run `copse` and tell the supervisor what to build.",
+                fg="green")
+
+
+@app.command()
+def demo(
+    local: bool = typer.Option(False, "--local", help="Workers and reviewers on a local model (Ollama) instead of Claude/Codex."),
+    attach: bool = typer.Option(True, "--attach/--no-attach"),
+) -> None:
+    """Watch copse work on a tiny practice repo: two workers in parallel, reviews, gated merges, verified milestones.
+
+    Creates a small Python repo under ~/.copse/demo/ with two failing test
+    files and a two-milestone goal, then starts the supervisor there with
+    autopilot on. Takes a few minutes; nothing is created where you run it."""
+    from copse import demo as demo_mod
+
+    root = demo_mod.create(local=local)
+    typer.echo(f"demo repo: {root}")
+    os.chdir(root)
+    start(agent="supervisor", prompt=None, provider=None, attach=attach, watch=True,
+          autopilot=True, branch=None, worktree=None)
 
 
 @app.command()
@@ -172,6 +232,7 @@ def start(
         ws = _run(workspaces.checkout_for, db, os.getcwd(), branch=branch, worktree=worktree)
     else:
         ws = _here_or_scratch(db, reuse_scratch=False)
+    _preflight(agent, provider, ws.repo_root)
     # Nothing slow before the chat starts: the paused session's leftover
     # processes, old paused sessions' worktrees and the pool refill are all
     # handled by the detached cull.
@@ -190,6 +251,19 @@ def start(
         _say_autopilot(db, a.id)
     if attach:
         _attach(ws, a.tmux_window)
+
+
+def _preflight(agent: str, provider: Optional[str], repo_root: str) -> None:
+    """Stop before launching when the chat can't start (no tmux, no CLI)."""
+    from copse import doctor as doctor_mod
+    from copse.profiles import load_profile
+
+    name = provider or _run(load_profile, agent, repo_root).provider
+    problems = doctor_mod.preflight(name)
+    if problems:
+        for p in problems:
+            typer.secho(f"✗ {p}", fg="red", err=True)
+        _fail("copse can't start yet. `copse doctor` checks everything else.")
 
 
 def _local_models_detached(repo_root: str) -> None:
@@ -596,9 +670,15 @@ def history(
         None, "--kind", help=f"Only this kind: one of {', '.join(history_mod.KINDS)}."
     ),
     all_repos: bool = typer.Option(False, "--all", help="Every repo, not just this one."),
+    share: bool = typer.Option(False, "--share", help="Summarize this repo's session in a few lines to paste into Slack or a post."),
+    session: Optional[str] = typer.Option(None, "--session", help="With --share: this session (an id from `copse sessions`) instead of the current one."),
 ) -> None:
     """Durable history of worker results, reviews, merges and milestone checks."""
     db = DB()
+    if share:
+        root_id = session or _session_root(db)
+        typer.echo(_run(history_mod.share_card, db, root_id))
+        return
     repo_root = None
     if not all_repos:
         try:

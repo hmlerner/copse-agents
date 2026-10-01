@@ -44,18 +44,47 @@ def _tool(name: str, required: bool, why: str, version_args: list[str] | None = 
     return Check(OK, name, f"{path}" + (f" ({version[:40]})" if version else ""))
 
 
+CLI_INSTALL = {
+    "claude": ("Claude Code", "npm install -g @anthropic-ai/claude-code (or see https://code.claude.com)"),
+    "codex": ("Codex", "npm install -g @openai/codex"),
+    "antigravity": ("Google Antigravity", "see https://antigravity.google"),
+}
+
+
+def preflight(provider: str) -> list[str]:
+    """What stops a chat on ``provider`` from starting at all, as lines to
+    print, so a first run fails before anything launches instead of leaving
+    an empty tmux window. Empty when it can start."""
+    from copse import antigravity, providers
+
+    problems = []
+    if not shutil.which("tmux"):
+        problems.append("tmux isn't installed: copse runs every agent in a tmux window. "
+                        "Install: brew install tmux (Debian/Ubuntu: sudo apt install tmux)")
+    binary = {"claude": providers.claude_binary, "codex": providers.codex_binary,
+              "antigravity": antigravity.binary}.get(provider)
+    if binary:
+        exe = binary()
+        if not (shutil.which(exe) or os.path.isfile(exe)):
+            name, how = CLI_INSTALL[provider]
+            problems.append(f"{name} (`{exe}`) isn't on PATH: the chat runs on it. Install: {how}")
+    return problems
+
+
 def checks(repo_root: str | None) -> list[Check]:
-    from copse import config, procs, tmux
+    from copse import config, detect, procs, tmux
     from copse.db import DB
 
     out: list[Check] = []
     v = sys.version_info
     out.append(Check(OK if v >= (3, 11) else FAIL, "python",
                      f"{v.major}.{v.minor}.{v.micro}" + ("" if v >= (3, 11) else " (copse needs 3.11 or newer)")))
-    out.append(_tool("tmux", True, "copse runs every agent in a tmux window", ["-V"], "brew install tmux"))
+    out.append(_tool("tmux", True, "copse runs every agent in a tmux window", ["-V"],
+                     "brew install tmux (Debian/Ubuntu: sudo apt install tmux)"))
     out.append(_tool("claude", True, "the supervisor and the built-in profiles use Claude Code",
-                     install="see https://code.claude.com"))
-    out.append(_tool("codex", False, "only needed for Codex agents (reviewer-codex)"))
+                     install=CLI_INSTALL["claude"][1]))
+    out.append(_tool("codex", False, "only needed for Codex agents (reviewer-codex)",
+                     install=CLI_INSTALL["codex"][1]))
     out.append(_tool("agy", False, "only needed for Google Antigravity agents"))
     out.append(_tool("gh", False, "only needed for `copse pr` and `copse new --pr`"))
     out.append(_tool("pre-commit", False, "only needed if the repo uses pre-commit hooks"))
@@ -140,6 +169,9 @@ def checks(repo_root: str | None) -> list[Check]:
                 out.append(Check(OK if docker else WARN, "docker",
                                  f"{docker} (services: {names})" if docker else
                                  f"not found: per-worktree services ({names}) won't start"))
+            elif any((Path(repo_root) / name).is_file() for name in detect.COMPOSE_FILES):
+                out.append(Check(OK, "services", "docker compose found: parallel workers share its "
+                                 "containers; per-worktree databases are `services` (copse Pro)"))
             if (Path(repo_root) / "graphify-out" / "graph.json").is_file():
                 out.append(Check(OK, "code map", "graphify-out/graph.json"))
             else:
@@ -319,11 +351,22 @@ def quota_checks(repo_root: str | None) -> list[Check]:
 MARK = {OK: "✓", WARN: "!", FAIL: "✗"}
 
 
+def is_optional(c: Check) -> bool:
+    """A warning about something only some setups use (Codex, a local
+    model, gh, ...): listed apart, so a fresh install doesn't look broken."""
+    return c.level == WARN and "only needed" in c.detail
+
+
 def render(results: list[Check]) -> str:
     width = max(len(c.name) for c in results) if results else 0
-    lines = [f"{MARK[c.level]} {c.name.ljust(width)}  {c.detail}" for c in results]
-    fails = sum(c.level == FAIL for c in results)
-    warns = sum(c.level == WARN for c in results)
+    main = [c for c in results if not is_optional(c)]
+    optional = [c for c in results if is_optional(c)]
+    lines = [f"{MARK[c.level]} {c.name.ljust(width)}  {c.detail}" for c in main]
+    if optional:
+        lines.append("\nOptional, not set up (copse works without them):")
+        lines.extend(f"- {c.name.ljust(width)}  {c.detail}" for c in optional)
+    fails = sum(c.level == FAIL for c in main)
+    warns = sum(c.level == WARN for c in main)
     if fails:
         lines.append(f"\n{fails} problem(s) will stop copse from working; {warns} warning(s).")
     elif warns:

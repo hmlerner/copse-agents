@@ -879,8 +879,23 @@ def nudge(db: DB, ap: Autopilot, cfg: RepoConfig,
     )
 
 
-def guide(cfg: RepoConfig) -> str:
-    return GUIDE.format(max_agents=cfg.max_agents or "any number of")
+NO_CHECKS = """- This repo has no `checks` in .copse/config.json, so nothing verifies a
+  branch before it merges. Before the first `assign`, propose a check command
+  to the user{suggestion}, and once they agree add it to `checks` in
+  .copse/config.json (create the file if needed) and commit it.
+"""
+
+
+def guide(cfg: RepoConfig, repo_root: str | None = None) -> str:
+    text = GUIDE.format(max_agents=cfg.max_agents or "any number of")
+    if repo_root and not cfg.checks:
+        from copse import detect
+
+        found = detect.detect(repo_root).checks
+        suggestion = (" (this repo looks like it runs: "
+                      + "; ".join(f"`{c}`" for c in found) + ")") if found else ""
+        text += NO_CHECKS.format(suggestion=suggestion)
+    return text
 
 
 def kickoff(plan: Plan) -> str:

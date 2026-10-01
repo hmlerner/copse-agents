@@ -518,6 +518,17 @@ def sync_with_base(ws: Workspace) -> SyncResult:
     return SyncResult("synced", new_sha=new_sha, old_sha=before)
 
 
+PR_FOOTER = "🌲 Built in parallel and verified with [copse](https://pawdelta.com/copse/)"
+
+
+def with_footer(body: str, repo_root: str) -> str:
+    """``body`` plus copse's one-line footer, unless the repo turned it off
+    (``"pr_footer": false``)."""
+    if not load_repo_config(repo_root).pr_footer:
+        return body
+    return f"{body.rstrip()}\n\n{PR_FOOTER}" if body.strip() else PR_FOOTER
+
+
 def pull_request(ws: Workspace, title: str | None = None, draft: bool = False) -> str:
     """Push, then open a PR with ``gh`` when available, else return the
     compare URL for the browser."""
@@ -525,7 +536,16 @@ def pull_request(ws: Workspace, title: str | None = None, draft: bool = False) -
     git.push(ws.path, ws.branch)
     if shutil.which("gh"):
         args = ["gh", "pr", "create", "--base", base, "--head", ws.branch]
-        args += ["--title", title, "--body", ""] if title else ["--fill"]
+        if title:
+            body = ""
+        else:
+            # --fill picks the title; the body is what --fill would write
+            # (the commit subjects) with the footer, since --body overrides it.
+            subjects = git.out(["log", "--reverse", "--format=- %s", f"{base}..{ws.branch}"], ws.path)
+            body = subjects if len(subjects.splitlines()) > 1 else git.out(
+                ["log", "-1", "--format=%b", ws.branch], ws.path)
+            args.append("--fill")
+        args += (["--title", title] if title else []) + ["--body", with_footer(body, ws.repo_root)]
         if draft:
             args.append("--draft")
         proc = subprocess.run(args, cwd=ws.path, capture_output=True, text=True)

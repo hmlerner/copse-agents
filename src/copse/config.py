@@ -86,6 +86,7 @@ class RepoConfig:
     # Start Ollama in the background when a native profile points at it on
     # this machine and it isn't running (see copse.native.serve).
     local_models: bool = True
+    pr_footer: bool = True             # `copse pr` / `copse ci` end the PR body with one "built with copse" line
     sidebar: str = "left"              # where the dashboard sits: "left" of the chat or "bottom"
     learning: str = "auto"             # "auto" (copse Pro's cloud learner when entitled, else off), "off", or an installed learning plugin's name (see copse.learning)
     learning_candidates: list[str] = field(default_factory=list)  # profiles the learner may pick from
@@ -149,7 +150,7 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
                 "reviewer", "review_profile", "pre_commit", "max_agents", "check_timeout",
                 "usage_limit", "pool_size", "graphify", "stale_after", "pipeline",
                 "review_rounds", "overlap", "local_models", "merge_into",
-                "auto_merge_default_branch", "sidebar", "plan_first", "learning",
+                "auto_merge_default_branch", "sidebar", "pr_footer", "plan_first", "learning",
                 "learning_candidates", "limit_cooldown_minutes", "message_delivery"):
         if key in local:
             setattr(cfg, key, local[key])
@@ -184,7 +185,7 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
 TEMPLATE = {
     "setup": [],
     "teardown": [],
-    "copy": [".env"],
+    "copy": [],
     "base_branch": None,
     "branch_prefix": "",
     "default_agent": "developer",
@@ -193,12 +194,14 @@ TEMPLATE = {
 }
 
 
-def write_template(repo_root: str | Path) -> Path:
+def write_template(repo_root: str | Path, values: dict | None = None) -> Path:
+    """Write ``.copse/config.json`` (the template, with ``values`` over it)
+    unless it already exists, and the ``.gitignore`` for the local file."""
     base = Path(repo_root) / CONFIG_DIR
     base.mkdir(parents=True, exist_ok=True)
     path = base / CONFIG_FILE
     if not path.exists():
-        path.write_text(json.dumps(TEMPLATE, indent=2) + "\n", encoding="utf-8")
+        path.write_text(json.dumps({**TEMPLATE, **(values or {})}, indent=2) + "\n", encoding="utf-8")
     ignore = base / ".gitignore"
     if not ignore.exists():
         ignore.write_text(f"{LOCAL_CONFIG_FILE}\n", encoding="utf-8")
