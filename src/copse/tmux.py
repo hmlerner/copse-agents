@@ -71,11 +71,12 @@ def windows(session: str) -> list[str]:
     return proc.stdout.split() if proc.returncode == 0 else []
 
 
-# PawDelta palette (pawdelta.com): near-black ground, indigo accent, slate text.
+# The copse window as pawdelta.com/copse draws it (Canopy, night): a dark
+# forest ground, canopy-green accent, grey-green text.
 THEME = {
-    "bg": "#0a0b0f", "bg2": "#111318", "line": "#1f2230",
-    "accent": "#6366f1", "accent_light": "#818cf8",
-    "text": "#f1f5f9", "muted": "#64748b", "muted2": "#94a3b8",
+    "bg": "#121915", "bg2": "#1a221d", "line": "#2a342e",
+    "accent": "#2d6a47", "accent_light": "#86c99c",
+    "text": "#e3e9e2", "muted": "#7f8c84", "muted2": "#b4c0b8",
 }
 
 
@@ -94,7 +95,7 @@ def apply_theme(session: str) -> None:
         "window-status-format": f"#[fg={t['muted']}] #W ",
         "window-status-current-format": f"#[fg={t['accent_light']},bold] #W ",
         "pane-border-style": f"fg={t['line']}",
-        "pane-active-border-style": f"fg={t['accent']}",
+        "pane-active-border-style": f"fg={t['accent_light']}",
         "pane-border-lines": "single",
         "window-style": f"bg={t['bg']}",
         "window-active-style": f"bg={t['bg']}",
