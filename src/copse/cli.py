@@ -845,6 +845,32 @@ def merge_cmd(
     typer.echo(f"✓ merged {ws.branch} into {ws.base_branch} ({target})")
 
 
+@app.command("services")
+def services_cmd(
+    action: str = typer.Argument("ls", help="ls, up or down."),
+    workspace: Optional[str] = typer.Argument(None, help="Workspace (default: the current one)."),
+) -> None:
+    """Per-worktree Docker services (copse Pro): list, start or stop a workspace's."""
+    from copse import services as services_mod
+    from copse.config import load_repo_config
+
+    if action not in ("ls", "up", "down"):
+        _fail("action must be ls, up or down")
+    ws = _ws(DB(), workspace)
+    cfg = load_repo_config(ws.repo_root)
+    if not cfg.services:
+        _fail('no services configured; add a "services" list to .copse/config.json')
+    if action == "up":
+        done = services_mod.up(ws, cfg)
+        typer.echo("started: " + (", ".join(done) or "nothing"))
+    elif action == "down":
+        done = services_mod.down(ws, cfg)
+        typer.echo("stopped: " + (", ".join(done) or "nothing"))
+    else:
+        lines = services_mod.status(ws)
+        typer.echo("\n".join(lines) if lines else f"no services running for {ws.id}")
+
+
 @app.command()
 def rm(
     workspace: str,
