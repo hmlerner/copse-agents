@@ -392,7 +392,7 @@ def send_message(to_agent_id: str, message: str) -> str:
 @mcp.tool()
 def read_messages() -> str:
     """Read your unread messages from agents and copse (marks them read). Call
-    it when a "copse: N new messages" notice arrives, or when you're about to
+    it when a "copse (HH:MM:SS): N new messages" notice arrives, or when you're about to
     stop."""
     db = DB()
     caller, _ = _caller(db)

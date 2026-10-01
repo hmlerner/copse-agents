@@ -1020,10 +1020,14 @@ def pulls_messages(db: DB, agent: Agent) -> bool:
 
 
 def unread_notice(db: DB, messages: list) -> str:
+    """The one line pushed instead of the messages themselves. It carries the
+    time so no two notices read the same: Claude Code drops a peer message
+    identical to the previous one from the same sender, and a dropped notice
+    leaves the supervisor waiting on news it already has."""
     senders = list(dict.fromkeys(m.sender_id or "copse" for m in messages))
     n = len(messages)
-    return (f"copse: {n} new message{'s' if n != 1 else ''} (from {', '.join(senders)}). "
-            "Call read_messages.")
+    return (f"copse ({time.strftime('%H:%M:%S')}): {n} new message{'s' if n != 1 else ''} "
+            f"(from {', '.join(senders)}). Call read_messages.")
 
 
 def render_unread(db: DB, messages: list) -> str:
