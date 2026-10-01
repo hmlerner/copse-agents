@@ -80,6 +80,9 @@ class RepoConfig:
     # already fast). 0 disables the pool.
     pool_size: int | None = None
     add_dirs: list[str] = field(default_factory=list)
+    # Per-worktree Docker services (copse Pro): [{"name", "preset"?, "image"?, "port"?, "env"?}]
+    # -- see copse.services.
+    services: list[dict] = field(default_factory=list)
     # Start Ollama in the background when a native profile points at it on
     # this machine and it isn't running (see copse.native.serve).
     local_models: bool = True
@@ -152,6 +155,9 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
             setattr(cfg, key, local[key])
         elif key in shared:
             setattr(cfg, key, shared[key])
+    services = local["services"] if "services" in local else shared.get("services")
+    if isinstance(services, list):
+        cfg.services = [s for s in services if isinstance(s, dict)]
     for source in (shared, local):  # per group, so a repo can override one and keep the rest
         plugins = source.get("plugins")
         if isinstance(plugins, dict):
