@@ -175,18 +175,6 @@ def split_left(target: str, cwd: str, command: list[str], env: dict[str, str],
     return pane
 
 
-def split_below(target: str, cwd: str, command: list[str], env: dict[str, str],
-                lines: int = 14) -> str:
-    """Open a pane under ``target`` running ``command``, keeping focus on
-    ``target``. Returns the new pane's id."""
-    env_args = [a for k, v in env.items() for a in ("-e", f"{k}={v}")]
-    proc = _tmux(
-        "split-window", "-d", "-v", "-l", str(lines), "-P", "-F", "#{pane_id}",
-        "-t", target, "-c", cwd, *env_args, "--", *command,
-    )
-    return proc.stdout.strip()
-
-
 def window_alive(target: str) -> bool:
     proc = _tmux("display-message", "-p", "-t", target, "#{pane_dead}", check=False)
     return proc.returncode == 0 and proc.stdout.strip() == "0"
