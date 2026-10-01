@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from copse import git, tmux
+from copse import git, services, tmux
 from copse.config import (
     PORT_BLOCK_SIZE,
     PORT_RANGE_START,
@@ -63,6 +63,11 @@ def workspace_env(ws: Workspace) -> dict[str, str]:
     for key in ("COPSE_HOME", "COPSE_TMUX_SOCKET", "COPSE_CLAUDE_BIN"):
         if key in os.environ:
             env[key] = os.environ[key]
+    if ws.kind != "main" and os.path.isdir(ws.repo_root):
+        try:
+            env.update(services.env(ws, load_repo_config(ws.repo_root)))
+        except ValueError:
+            pass  # a broken config is reported elsewhere
     return env
 
 
@@ -273,6 +278,8 @@ def create(
         created_at=time.time(),
     )
     db.add_workspace(ws)
+    if run_setup:
+        services.up(ws, cfg)  # before setup, so setup commands can reach them
 
     if claimed is not None:
         from copse import pool
@@ -452,6 +459,7 @@ def remove(db: DB, ws: Workspace, *, force: bool = False, delete_branch: bool = 
         if not teardown.ok and not force:
             raise WorkspaceError(f"teardown failed; fix it or pass --force:\n{teardown.log}")
 
+    services.down(ws, cfg)
     if not keep_session:
         tmux.kill_session(ws.tmux_session)
     if exists:

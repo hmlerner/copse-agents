@@ -392,6 +392,26 @@ Autopilot, merge gates and cleanup:
 | `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
 | `plugins` | `{}` | which installed plugin to use per group, e.g. `{"events": "<name>", "policy": "off"}`; unset, a group uses the only plugin installed in it (see "Plugins" below) |
 | `routing` | see below | for each task weight (`light`, `medium`, `heavy`), the profiles `assign`/`handoff` try in order |
+| `services` | `[]` | per-worktree Docker services (copse Pro; see "Per-worktree services" below) |
+
+### Per-worktree services
+
+With copse Pro, each worktree can get its own database or cache, so parallel agents never share one. List them in `.copse/config.json`:
+
+```json
+{"services": [
+  {"name": "db", "preset": "postgres"},
+  {"name": "cache", "preset": "redis"},
+  {"name": "search", "image": "opensearchproject/opensearch:2", "port": 9200,
+   "env": {"SEARCH_URL": "http://127.0.0.1:{port}"}}
+]}
+```
+
+Each entry takes `name`, an optional `preset` (`postgres`, `redis` or `mongo`, which fill in the image, container `port` and default env such as `DATABASE_URL=postgres://postgres:copse@127.0.0.1:{port}/app`), `image`, `port` (the container's port) and `env`. In `env` templates, `{port}` is the host port, `{name}` the service name and `{workspace}` the workspace name.
+
+When a workspace is created (including from the pool), copse starts one container per service, named `copse-<repo>-<workspace>-<service>`, bound to `127.0.0.1` on a port from the worktree's own block (`COPSE_PORT_BASE` plus the service's index, so at most 10 services). The rendered env and `COPSE_SVC_<NAME>_PORT` reach agents and `setup` commands. `copse rm` (and the idle cull) remove the containers.
+
+`copse services [ls|up|down] [workspace]` lists, starts or stops them by hand. Without copse Pro, copse prints a one-line notice and starts nothing; if Docker isn't installed it warns and carries on. `copse doctor` reports Docker when services are configured.
 
 ### Routing by weight
 
