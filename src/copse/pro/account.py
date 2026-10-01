@@ -14,11 +14,33 @@ USAGE = """usage: copse account <command> [--base-url URL]
   login     log in to copse Pro in your browser (device code)
   logout    revoke this device's session and forget its credentials
   status    show your account, plan, features and when the entitlement expires
-  upgrade   print the checkout URL for upgrading your plan
-  portal    print the billing portal URL (invoices, seats, cancellation)
+  upgrade   print the checkout URL for copse Pro (your personal org)
+  upgrade --team --seats N [--org ORG]
+            print the checkout URL for copse Team on a team org you administer
+            (default: the current org)
+  portal [--org ORG]  print the billing portal URL (invoices, seats, cancellation)
   org list          list the orgs you belong to
+  org create <name> create a team org you own (then `upgrade --team`)
+  org invite <email> [--admin]  invite someone to the current org; prints the code
+  org join <code>   accept an invite code and join that org
   org use <org_id>  work as a member of <org_id> (`personal` for your own)
   org policy        show the current org's policy (and refresh the cached copy)"""
+
+
+def _take(args: list[str], flag: str, value: bool = True):
+    """Remove ``flag`` (and its value) from ``args``; return the value, True
+    for a bare flag, or None if absent. Raises ValueError if the value is missing."""
+    if flag not in args:
+        return None
+    i = args.index(flag)
+    if not value:
+        del args[i]
+        return True
+    if i + 1 >= len(args) or args[i + 1].startswith("--"):
+        raise ValueError(flag)
+    v = args[i + 1]
+    del args[i:i + 2]
+    return v
 
 
 def _when(ts: int | None) -> str:
@@ -61,6 +83,42 @@ class _OrgCommands:
                 creds.get("base_url")), grace=license.MAX_GRACE).org_id
         except (license.LicenseError, auth.AuthError):
             return None
+
+    def _team_org(self, org: str | None) -> str:
+        """The team org a command acts on: ``org`` or the current one."""
+        org = org or (self.store.load() or {}).get("org_id")
+        if not org:
+            raise auth.AuthError("no team org selected: pass --org ORG or run "
+                                 "`copse account org use <org_id>` (see `copse account org list`)",
+                                 code="no_team_org")
+        if not auth.ORG_ID_RE.match(org):
+            raise auth.AuthError("invalid org id", code="bad_request")
+        return org
+
+    def cmd_org_create(self, base: str | None, *name_words: str) -> int:
+        name = " ".join(name_words).strip()
+        if not name or len(name) > 100:
+            raise auth.AuthError("org name must be 1-100 characters", code="bad_request")
+        org = auth.create_org(self._client(base), self.store, name)
+        self._say(f"Created team org {org['org_id']} ({org['name']}); you are its owner.")
+        self._say(f"Next: copse account upgrade --team --seats N --org {org['org_id']}")
+        return 0
+
+    def cmd_org_invite(self, base: str | None, email: str, org: str | None = None,
+                       admin: bool = False) -> int:
+        org_id = self._team_org(org)
+        inv = auth.create_invite(self._client(base), self.store, org_id, email,
+                                 "admin" if admin else "member")
+        self._say(f"Invited {inv['email']} to {inv['org_id']} as {inv['role']}.")
+        self._say(f"Send them this command (the code is shown once): "
+                  f"copse account org join {inv['invite_code']}")
+        return 0
+
+    def cmd_org_join(self, base: str | None, code: str) -> int:
+        got = auth.accept_invite(self._client(base), self.store, code.strip())
+        self._say(f"Joined {got['org_id']} as {got['role']}. "
+                  f"Run `copse account org use {got['org_id']}` to work as a member.")
+        return 0
 
     def cmd_org_use(self, base: str | None, org_id: str) -> int:
         target = None if org_id == "personal" else org_id
@@ -132,17 +190,39 @@ class ProAccount(_OrgCommands):
         if args and args[0] in ("-h", "--help"):
             print(USAGE, file=self.out)
             return 0
-        ok = (len(args) == 1 and args[0] in ("login", "logout", "status", "upgrade", "portal")) or \
-            (args[:1] == ["org"] and (args[1:] in (["list"], ["policy"], [])
-                                      or (len(args) == 3 and args[1] == "use")))
-        if not ok:
+        try:
+            opts = {"team": _take(args, "--team", value=False), "seats": _take(args, "--seats"),
+                    "org": _take(args, "--org"), "admin": _take(args, "--admin", value=False)}
+            seats = int(opts["seats"]) if opts["seats"] is not None else None
+        except ValueError:
+            print(USAGE, file=self.err)
+            return 2
+        cmd, rest = (args[0] if args else None), args[1:]
+        sub = (rest[0] if rest else "list") if cmd == "org" else None
+        ok = {
+            "login": not rest, "logout": not rest, "status": not rest,
+            "upgrade": not rest and (bool(opts["team"]) == (seats is not None)) and (seats or 1) >= 1
+            and (opts["org"] is None or bool(opts["team"])),
+            "portal": not rest,
+            "org": (sub in ("list", "policy") and len(rest) <= 1)
+            or (sub in ("use", "invite", "join") and len(rest) == 2)
+            or (sub == "create" and len(rest) >= 2),
+        }.get(cmd, False)
+        flags_ok = {"upgrade": ("team", "seats", "org"), "portal": ("org",),
+                    "org": ("org", "admin") if sub == "invite" else ()}.get(cmd, ())
+        if not ok or any(v is not None and k not in flags_ok for k, v in opts.items()):
             print(USAGE, file=self.err)
             return 2
         try:
-            if args[0] == "org":
-                sub = args[1] if len(args) > 1 else "list"
-                return getattr(self, "cmd_org_" + sub)(base, *args[2:])
-            return getattr(self, "cmd_" + args[0])(base)
+            if cmd == "org":
+                if sub == "invite":
+                    return self.cmd_org_invite(base, rest[1], opts["org"], bool(opts["admin"]))
+                return getattr(self, "cmd_org_" + sub)(base, *rest[1:])
+            if cmd == "upgrade":
+                return self.cmd_upgrade(base, team=bool(opts["team"]), seats=seats, org=opts["org"])
+            if cmd == "portal":
+                return self.cmd_portal(base, org=opts["org"])
+            return getattr(self, "cmd_" + cmd)(base)
         except (auth.AuthError, license.LicenseError, credentials.CredentialError) as e:
             print(f"copse account: {e}", file=self.err)
             return 1
@@ -198,12 +278,20 @@ class ProAccount(_OrgCommands):
                       "reconnect to refresh")
         return 0
 
-    def cmd_upgrade(self, base: str | None) -> int:
-        self._say(auth.checkout_url(self._client(base), self.store))
+    def cmd_upgrade(self, base: str | None, team: bool = False, seats: int | None = None,
+                    org: str | None = None) -> int:
+        if not team:
+            self._say(auth.checkout_url(self._client(base), self.store))
+            return 0
+        self._say(auth.checkout_url(self._client(base), self.store, plan="team", seats=seats,
+                                    org_id=self._team_org(org)))
         return 0
 
-    def cmd_portal(self, base: str | None) -> int:
-        self._say(auth.portal_url(self._client(base), self.store))
+    def cmd_portal(self, base: str | None, org: str | None = None) -> int:
+        if org is not None and not auth.ORG_ID_RE.match(org):
+            raise auth.AuthError("invalid org id", code="bad_request")
+        org = org or (self.store.load() or {}).get("org_id")
+        self._say(auth.portal_url(self._client(base), self.store, org))
         return 0
 
 

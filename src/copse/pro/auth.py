@@ -555,8 +555,8 @@ def me(client: Client, store) -> dict:
             if k in body}
 
 
-def _billing_url(client: Client, store, path: str) -> str:
-    status, body = authed(client, store, "POST", path, {})
+def _billing_url(client: Client, store, path: str, body: dict | None = None) -> str:
+    status, body = authed(client, store, "POST", path, JSONBody(body) if body else {})
     if status != 200:
         raise _error(status, body)
     url = body.get("url")
@@ -565,11 +565,41 @@ def _billing_url(client: Client, store, path: str) -> str:
     return _sanitize(url, 2048)
 
 
-def checkout_url(client: Client, store) -> str:
-    """A Stripe checkout URL for upgrading (``POST /billing/checkout``)."""
-    return _billing_url(client, store, "/billing/checkout")
+def checkout_url(client: Client, store, *, plan: str = "pro", seats: int | None = None,
+                 org_id: str | None = None) -> str:
+    """A Stripe checkout URL for upgrading (``POST /billing/checkout``): Pro
+    for your personal org by default, or Team with ``seats`` for a team org
+    you administer."""
+    body = {"plan": plan, "seats": seats, "org_id": org_id} if plan != "pro" or org_id else {}
+    return _billing_url(client, store, "/billing/checkout", {k: v for k, v in body.items() if v is not None})
 
 
-def portal_url(client: Client, store) -> str:
-    """The billing portal URL (``POST /billing/portal``)."""
-    return _billing_url(client, store, "/billing/portal")
+def portal_url(client: Client, store, org_id: str | None = None) -> str:
+    """The billing portal URL (``POST /billing/portal``), for ``org_id`` if given."""
+    path = "/billing/portal" + (f"?org_id={urllib.parse.quote(org_id, safe='')}" if org_id else "")
+    return _billing_url(client, store, path)
+
+
+def create_org(client: Client, store, name: str) -> dict:
+    """Create a team org you own (``POST /orgs``); it has no plan until checkout."""
+    status, body = authed(client, store, "POST", "/orgs", JSONBody({"name": name}))
+    if status != 200:
+        raise _error(status, body)
+    return {k: _sanitize(body.get(k, ""), 64) for k in ("org_id", "name", "role")}
+
+
+def create_invite(client: Client, store, org_id: str, email: str, role: str = "member") -> dict:
+    """Invite ``email`` to ``org_id`` (``POST /orgs/{org_id}/invites``, admin+)."""
+    status, body = authed(client, store, "POST", f"/orgs/{urllib.parse.quote(org_id, safe='')}/invites",
+                          JSONBody({"email": email, "role": role}))
+    if status != 200:
+        raise _error(status, body)
+    return {k: _sanitize(body.get(k, ""), 320) for k in ("invite_code", "org_id", "email", "role")}
+
+
+def accept_invite(client: Client, store, code: str) -> dict:
+    """Join the org an invite code is for (``POST /invites/accept``)."""
+    status, body = authed(client, store, "POST", "/invites/accept", JSONBody({"invite_code": code}))
+    if status != 200:
+        raise _error(status, body)
+    return {k: _sanitize(body.get(k, ""), 64) for k in ("org_id", "role")}

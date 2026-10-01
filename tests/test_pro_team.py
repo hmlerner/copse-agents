@@ -91,9 +91,9 @@ def plugin(backend):
     return ProPolicy(REPO, store=backend.store, client=client(backend))
 
 
-def assign(provider="claude", model="claude-sonnet-4", profile="developer"):
+def assign(provider="claude", model="claude-sonnet-4", profile="developer", running=0):
     return AssignInfo(repo_root=REPO, task="t", profile=profile, provider=provider, model=model,
-                      actor="user")
+                      actor="user", running_workers=running)
 
 
 def merge(actor):
@@ -162,6 +162,19 @@ def test_null_lists_allow_any_provider_and_model(team):
 def test_empty_lists_allow_nothing(team):
     team.policy_body["policy"].update(allowed_providers=[])
     assert not plugin(team).check_assign(assign()).allowed
+
+
+@pytest.mark.parametrize("running,allowed", [(0, True), (3, True), (4, False), (9, False), (None, False)])
+def test_parallel_worker_cap(team, running, allowed):
+    d = plugin(team).check_assign(assign(running=running))
+    assert d.allowed is allowed
+    if not allowed:
+        assert "at most 4 parallel worker" in d.reason
+
+
+def test_no_cap_means_any_number_of_workers(team):
+    team.policy_body["policy"]["max_parallel_workers"] = None
+    assert plugin(team).check_assign(assign(running=None)).allowed
 
 
 @pytest.mark.parametrize("actor,allowed", [("user", True), (SUPERVISOR, False),
@@ -479,3 +492,68 @@ def test_the_installed_plugins_are_inert_without_an_entitlement(tmp_path):
         assert not (private_dir() / "events-spool.jsonl").exists()
     finally:
         plugins.reset()
+
+
+# -- self-serve Team: create an org, buy seats, invite, join ---------------------------------------
+
+
+def test_create_a_team_org_then_check_out_team_seats(team):
+    login(team, claims())
+    new_org = "org_" + "a" * 24
+
+    def create(form, headers):
+        assert form == {"name": "Acme Eng"}
+        return 200, {"org_id": new_org, "name": "Acme Eng", "personal": False, "role": "owner"}
+
+    def checkout(form, headers):
+        assert form == {"plan": "team", "seats": 5, "org_id": new_org}
+        return 200, {"url": "https://checkout.stripe.test/c/team", "id": "cs_1"}
+
+    team.routes["POST /orgs"] = create
+    team.routes["POST /billing/checkout"] = checkout
+    code, out, _ = run(team, "org", "create", "Acme", "Eng")
+    assert code == 0 and new_org in out and f"upgrade --team --seats N --org {new_org}" in out
+    code, out, _ = run(team, "upgrade", "--team", "--seats", "5", "--org", new_org)
+    assert code == 0 and out.strip() == "https://checkout.stripe.test/c/team"
+
+
+def test_team_upgrade_defaults_to_the_current_org(team):
+    team.store.save({**team.store.load(), "org_id": ORG})
+    team.routes["POST /billing/checkout"] = lambda f, h: (
+        (200, {"url": "https://checkout.stripe.test/c/t"}) if f == {"plan": "team", "seats": 3, "org_id": ORG}
+        else (400, {"error": "invalid_request"}))
+    code, out, _ = run(team, "upgrade", "--team", "--seats", "3")
+    assert code == 0 and "c/t" in out
+
+
+def test_team_upgrade_needs_an_org_and_seats(team):
+    code, _, err = run(team, "upgrade", "--team", "--seats", "3")
+    assert code == 1 and "no team org selected" in err
+    assert run(team, "upgrade", "--team")[0] == 2
+    assert run(team, "upgrade", "--seats", "3")[0] == 2
+    assert run(team, "upgrade", "--team", "--seats", "x", "--org", ORG)[0] == 2
+    assert run(team, "upgrade", "--org", ORG)[0] == 2
+
+
+def test_pro_upgrade_still_sends_no_body(team):
+    seen = []
+    team.routes["POST /billing/checkout"] = lambda f, h: (seen.append(f), (200, {"url": "https://c.test/x"}))[1]
+    assert run(team, "upgrade")[0] == 0 and seen == [{}]
+
+
+def test_invite_and_join(team):
+    code_ = "cpi_" + "b" * 43
+    team.routes[f"POST /orgs/{ORG}/invites"] = lambda f, h: (
+        200, {"invite_code": code_, "org_id": ORG, "email": f["email"], "role": f["role"]})
+    team.routes["POST /invites/accept"] = lambda f, h: (
+        (200, {"org_id": ORG, "role": "member"}) if f == {"invite_code": code_} else (400, {}))
+    code, out, _ = run(team, "org", "invite", "dev@acme.test", "--admin", "--org", ORG)
+    assert code == 0 and "as admin" in out and f"copse account org join {code_}" in out
+    code, out, _ = run(team, "org", "join", code_)
+    assert code == 0 and f"Joined {ORG} as member" in out
+
+
+def test_portal_for_a_team_org(team):
+    team.routes[f"POST /billing/portal?org_id={ORG}"] = [(200, {"url": "https://billing.stripe.test/p/t"})]
+    code, out, _ = run(team, "portal", "--org", ORG)
+    assert code == 0 and out.strip() == "https://billing.stripe.test/p/t"

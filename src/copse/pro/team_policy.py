@@ -10,7 +10,9 @@ policy on delegations and merges.
   good copy is used; if there has never been one, everything is denied with
   a message saying how to fix it.
 * ``check_assign`` denies a provider or model outside the allowed lists (and
-  an undeclared one when a list is set). ``check_merge`` denies a merge that
+  an undeclared one when a list is set), and a new worker once the repo
+  already has ``max_parallel_workers`` at work (or when copse couldn't
+  count them). ``check_merge`` denies a merge that
   wasn't asked for by the user (the pipeline's auto-merge, a supervisor or
   any other agent) when ``require_human_review`` is set.
 
@@ -194,6 +196,11 @@ class ProPolicy(PolicyPlugin):
             got = f"model {info.model!r}" if info.model else "no declared model"
             return deny(f"{who} uses {got}; org {p.org_id} allows only "
                         f"{', '.join(p.allowed_models) or 'no models'} (set `model` in the profile)")
+        cap = p.max_parallel_workers
+        if cap is not None and (info.running_workers is None or info.running_workers >= cap):
+            now = "an unknown number" if info.running_workers is None else str(info.running_workers)
+            return deny(f"org {p.org_id} allows at most {cap} parallel worker(s) per repo and "
+                        f"{now} are at work; wait for one to finish (or cancel one) and try again")
         return allow()
 
     def check_merge(self, info: MergeInfo) -> Decision:

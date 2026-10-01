@@ -466,9 +466,18 @@ Plans and prices: https://pawdelta.com/copse#pricing.
 ```sh
 copse account login      # log in in your browser (device code); copse checks the plan offline from then on
 copse account status     # your plan, features, hosted learning on or off, when the entitlement expires
-copse account upgrade    # the checkout URL for a bigger plan
-copse account portal     # the billing portal (invoices, seats, cancellation)
+copse account upgrade    # the checkout URL for copse Pro
+copse account portal     # the billing portal (invoices, seats, cancellation); --org ORG for a team org
 copse account org list   # the orgs you belong to; `org use <id>` switches, `org policy` shows the current one
+```
+
+Setting up a team takes no sign-up form:
+
+```sh
+copse account org create "Acme Eng"                    # a team org you own
+copse account upgrade --team --seats 5 --org org_...   # check out copse Team for it
+copse account org invite dev@acme.com --org org_...    # prints a one-time `org join` code (--admin for admins)
+copse account org join cpi_...                         # your teammate, logged in with that email
 copse account logout     # revoke this device's session and forget its credentials
 ```
 
