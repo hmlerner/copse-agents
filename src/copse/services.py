@@ -2,7 +2,8 @@
 configured service, so parallel agents don't share one database.
 
 Services come from the ``services`` key of ``.copse/config.json``. Each gets a
-host port from the worktree's own port block (``port_base + index``), bound to
+host port from the worktree's own port block (``port_base + 1 + index``, leaving
+``port_base`` itself to the app), bound to
 127.0.0.1, and its connection env is added to ``workspace_env``. Nothing here
 fails workspace creation: a missing Docker or entitlement just prints a note.
 """
@@ -77,8 +78,8 @@ def resolve(ws: Workspace, cfg: RepoConfig) -> list[Service]:
     if ws.port_base is None:
         return out
     for i, raw in enumerate(cfg.services):
-        if i >= PORT_BLOCK_SIZE:
-            _say(f"only {PORT_BLOCK_SIZE} services fit in a worktree's port block; ignoring the rest")
+        if i >= PORT_BLOCK_SIZE - 1:
+            _say(f"only {PORT_BLOCK_SIZE - 1} services fit in a worktree's port block; ignoring the rest")
             break
         if not isinstance(raw, dict) or not raw.get("name"):
             _say(f"service #{i + 1} needs a name; skipped")
@@ -90,7 +91,7 @@ def resolve(ws: Workspace, cfg: RepoConfig) -> list[Service]:
         if not image or not port:
             _say(f"service {name!r} needs a preset, or an image and a port; skipped")
             continue
-        host_port = ws.port_base + i
+        host_port = ws.port_base + 1 + i
         env_templates = {**preset.get("env", {}), **(raw.get("env") or {})}
         env = {
             k: _render(str(v), port=host_port, name=name, workspace=ws.name)
@@ -147,6 +148,7 @@ def up(ws: Workspace, cfg: RepoConfig) -> list[str]:
     started = []
     for svc in resolve(ws, cfg):
         name = container_name(ws, svc.name)
+        _docker(["rm", "-f", name])  # a leftover from an earlier `up` would block the name
         cmd = ["run", "-d", "--rm", "--name", name, "--label", f"copse.workspace={ws.id}",
                "-p", f"127.0.0.1:{svc.host_port}:{svc.port}"]
         for k, v in svc.docker_env.items():
@@ -159,17 +161,19 @@ def up(ws: Workspace, cfg: RepoConfig) -> list[str]:
     return started
 
 
-def down(ws: Workspace, cfg: RepoConfig) -> list[str]:
-    """Stop and remove the workspace's service containers. Not gated on the
-    entitlement, so a lapsed license can't leak running containers."""
-    if not cfg.services or not docker_path():
+def down(ws: Workspace, cfg: RepoConfig | None = None) -> list[str]:
+    """Stop and remove every container labelled with the workspace, whatever
+    the config says now (a renamed or deleted service is still cleaned up).
+    Not gated on the entitlement, so a lapsed license can't leak containers.
+    Returns the container names removed."""
+    if not docker_path():
         return []
-    stopped = []
-    for svc in resolve(ws, cfg):
-        proc = _docker(["rm", "-f", container_name(ws, svc.name)])
-        if proc is not None and proc.returncode == 0:
-            stopped.append(svc.name)
-    return stopped
+    proc = _docker(["ps", "-aq", "--filter", f"label=copse.workspace={ws.id}"])
+    ids = proc.stdout.split() if proc is not None and proc.returncode == 0 else []
+    if not ids:
+        return []
+    proc = _docker(["rm", "-f", *ids])
+    return ids if proc is not None and proc.returncode == 0 else []
 
 
 def status(ws: Workspace) -> list[str]:

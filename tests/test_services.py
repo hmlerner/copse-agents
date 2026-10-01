@@ -17,7 +17,7 @@ def fake_docker(tmp_path, monkeypatch):
     bindir.mkdir()
     log = tmp_path / "docker.log"
     exe = bindir / "docker"
-    exe.write_text(f'#!/bin/sh\necho "$@" >> {log}\n')
+    exe.write_text(f'#!/bin/sh\necho "$@" >> {log}\n[ "$1" = ps ] && echo c0ffee\nexit 0\n')
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
 
@@ -48,38 +48,40 @@ def test_presets_and_env_rendering(db, repo):
     svcs = services.resolve(ws, cfg)
     assert svcs[0].image.startswith("postgres:") and svcs[0].port == 5432
     assert svcs[0].env["DATABASE_URL"] == (
-        f"postgres://postgres:copse@127.0.0.1:{ws.port_base}/app")
-    assert svcs[0].env["COPSE_SVC_DB_PORT"] == str(ws.port_base)
-    assert svcs[1].env["CACHE"] == f"my-cache@{ws.name}:{ws.port_base + 1}"
-    assert svcs[1].env["COPSE_SVC_MY_CACHE_PORT"] == str(ws.port_base + 1)
+        f"postgres://postgres:copse@127.0.0.1:{ws.port_base + 1}/app")
+    assert svcs[0].env["COPSE_SVC_DB_PORT"] == str(ws.port_base + 1)
+    assert svcs[1].env["CACHE"] == f"my-cache@{ws.name}:{ws.port_base + 2}"
+    assert svcs[1].env["COPSE_SVC_MY_CACHE_PORT"] == str(ws.port_base + 2)
 
 
-def test_ports_come_from_the_block(db, repo):
+def test_ports_come_from_the_block_after_the_apps_own(db, repo):
     configure(repo, [{"name": f"s{i}", "image": "i", "port": 1000 + i}
                      for i in range(PORT_BLOCK_SIZE + 2)])
     ws = workspaces.create(db, str(repo), "feat-a", run_setup=False).workspace
     svcs = services.resolve(ws, load_repo_config(str(repo)))
-    assert [s.host_port for s in svcs] == [ws.port_base + i for i in range(PORT_BLOCK_SIZE)]
+    assert [s.host_port for s in svcs] == [ws.port_base + 1 + i for i in range(PORT_BLOCK_SIZE - 1)]
 
 
 def test_started_on_create_and_in_workspace_env(db, repo, fake_docker, entitled):
     configure(repo, [{"name": "db", "preset": "postgres"}])
     ws = workspaces.create(db, str(repo), "feat-a").workspace
-    (call,) = fake_docker()
+    clear, call = fake_docker()
+    assert clear == f"rm -f {services.container_name(ws, 'db')}"  # a leftover never blocks `up`
     assert call.startswith("run -d --rm --name copse-")
     assert f"--label copse.workspace={ws.id}" in call
-    assert f"-p 127.0.0.1:{ws.port_base}:5432" in call
+    assert f"-p 127.0.0.1:{ws.port_base + 1}:5432" in call
     assert "-e POSTGRES_PASSWORD=copse" in call
     env = workspaces.workspace_env(ws)
-    assert env["DATABASE_URL"].endswith(f":{ws.port_base}/app")
-    assert env["COPSE_SVC_DB_PORT"] == str(ws.port_base)
+    assert env["DATABASE_URL"].endswith(f":{ws.port_base + 1}/app")
+    assert env["COPSE_SVC_DB_PORT"] == str(ws.port_base + 1)
 
 
 def test_removed_on_remove(db, repo, fake_docker, entitled):
     configure(repo, [{"name": "db", "preset": "postgres"}])
     ws = workspaces.create(db, str(repo), "feat-a").workspace
+    configure(repo, [])  # removal goes by label, even after the config changed
     workspaces.remove(db, ws)
-    assert fake_docker()[-1] == f"rm -f {services.container_name(ws, 'db')}"
+    assert fake_docker()[-2:] == [f"ps -aq --filter label=copse.workspace={ws.id}", "rm -f c0ffee"]
 
 
 def test_not_entitled_runs_nothing(db, repo, fake_docker, monkeypatch, capsys):
