@@ -476,20 +476,26 @@ def test_entry_points_are_registered():
 
 
 def test_the_installed_plugins_are_inert_without_an_entitlement(tmp_path):
-    """Out of the box: copse's own policy and events plugins are selected
-    (the only ones installed) and allow everything, send nothing."""
-    from copse import policy
+    """Out of the box: copse's own policy plugin is selected (the only one
+    installed), both of its events plugins hear every event (the group fans
+    out), and they allow everything, send nothing, write nothing."""
+    from copse import events, policy
+    from copse.pro.audit_chain import AuditChain, audit_dir
 
     plugins.reset()
     try:
         cfg = RepoConfig()
         p = plugins.select(plugins.POLICY, cfg, str(tmp_path))
-        e = plugins.select(plugins.EVENTS, cfg, str(tmp_path))
-        assert isinstance(p, ProPolicy) and isinstance(e, ProEvents)
+        assert isinstance(p, ProPolicy)
+        found = events.plugins_for(cfg, str(tmp_path))
+        assert {type(x) for x in found} == {ProEvents, AuditChain}
+        [e] = [x for x in found if isinstance(x, ProEvents)]
         assert policy.check_assign(cfg, str(tmp_path), "developer", "t", "assign").allowed
-        e.emit(ev(repo_root=str(tmp_path)))
+        for x in found:
+            x.emit(ev(repo_root=str(tmp_path)))
         assert e.queue.qsize() == 0 and e._thread is None
         assert not (private_dir() / "events-spool.jsonl").exists()
+        assert list(audit_dir().iterdir()) == []
     finally:
         plugins.reset()
 

@@ -262,6 +262,7 @@ your own status line prints, so what you see doesn't change.
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
 | `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
 | `copse account login\|logout\|status\|upgrade\|portal\|org` | your copse Pro account (see "copse Pro and Team" below) |
+| `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
 | `copse attach / cd / open [WS]` | tmux session / path / editor |
 | `copse status / diff [--stat] [WS]` | compared with the base branch (committed + uncommitted) |
@@ -390,7 +391,7 @@ Autopilot, merge gates and cleanup:
 | `message_delivery` | `"pull"` | how agent and copse messages reach an interactive supervisor: `"pull"` keeps them unread and delivers one notice ("copse: 2 new messages (from 9f742c5c, pipeline). Call read_messages."; the sidebar shows an unread count), `"push"` delivers each message's text. Messages you send (`copse send`, typing) and messages to workers are always pushed |
 | `learning` | `"auto"` | which learning plugin records how worker tasks turned out and suggests profiles (see below): `"auto"` is copse Pro's hosted learning when your plan includes it and nothing otherwise; `"off"`; or an installed plugin's name |
 | `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
-| `plugins` | `{}` | which installed plugin to use per group, e.g. `{"events": "<name>", "policy": "off"}`; unset, a group uses the only plugin installed in it (see "Plugins" below) |
+| `plugins` | `{}` | which installed plugin to use per group, e.g. `{"events": "<name>", "policy": "off"}`; unset, a group uses the only plugin installed in it, except `events`, which uses every installed one (several names: `"pro, audit"`; see "Plugins" below) |
 | `routing` | see below | for each task weight (`light`, `medium`, `heavy`), the profiles `assign`/`handoff` try in order |
 
 ### Routing by weight
@@ -446,14 +447,17 @@ named):
 | `copse.account` | `copse/account.py` | handles `copse account ...` |
 
 An entry point's object is a factory `make(repo_root)` returning the plugin
-(or `None`), called once per repo per process. The events, policy and account
-groups select themselves: when exactly one plugin is installed in a group it's
-used; with several, or to turn one off, set `plugins` in the config. With no
-plugin, every delegation and merge is allowed and nothing is reported. A
-plugin that's missing, broken or raises is logged and ignored, never failing
-what copse was doing. copse's own Pro and Team plugins (`pro` in the events,
-policy and account groups, `cloud` in learning; `src/copse/pro`) are always
-installed and do nothing until you log in to a plan that includes them.
+(or `None`), called once per repo per process. The policy and account groups
+select themselves: when exactly one plugin is installed in a group it's used;
+with several, or to turn one off, set `plugins` in the config. The events
+group fans out: every installed events plugin hears every event, unless
+`plugins.events` names the ones to use (`"audit"`, `"pro, audit"`, or `"off"`).
+With no plugin, every delegation and merge is allowed and nothing is reported.
+A plugin that's missing, broken or raises is logged and ignored, never failing
+what copse was doing. copse's own Pro, Team and Enterprise plugins (`pro` in
+the events, policy and account groups, `audit` in events, `cloud` in learning;
+`src/copse/pro`) are always installed and do nothing until you log in to a
+plan that includes them.
 
 ## copse Pro and Team
 
@@ -492,6 +496,37 @@ agents and branches are named only by keyed hashes (HMACs under your org's
 key) that the server can't reverse. Never the task text, prompts, diffs,
 file names, paths or branch names. See `src/copse/pro/learning.py` and
 `src/copse/pro/team_events.py` for the exact payloads.
+
+### Audit log (copse Enterprise)
+
+With a plan that includes `audit`, copse keeps a local, tamper-evident record
+of every action an agent took: each delegation (`assign`/`handoff`), review
+verdict, escalation, merge and worktree removal, and every delegation or merge
+the repo's policy refused (with the reason). Nothing leaves the machine; this
+is the `audit` events plugin (`src/copse/pro/audit_chain.py`) running next to
+the Team feed, and without the entitlement it writes nothing, not even a key.
+
+Each repo's log is an append-only JSONL file, `~/.copse/audit/<repo>-<hash>.jsonl`
+(0600, in a 0700 directory). Every record carries `seq`, `ts` (UTC), the full
+local event (kind, agent, branch, profile, provider, model, actor, workspace,
+repo, time, and the outcome: `approved`, `merged`, `reason`), `prev_hash` (the
+SHA-256 of the previous record's canonical JSON; 64 zeros for the first),
+`hash` (the SHA-256 of this record's seq, ts, event and prev_hash in canonical
+JSON) and `sig`, an Ed25519 signature over `hash` by a per-install key kept in
+`~/.copse/audit/signing.key` (0600, created on first use). A head file next to
+the log remembers the last seq, so records removed from the end are caught too.
+
+```sh
+copse audit verify [--repo PATH]                 # recompute the chain and check every signature;
+                                                 # prints the first broken seq and exits 1 if any
+copse audit export [--since ISO] [--format jsonl|csv]   # the records, for your SIEM or a spreadsheet
+copse audit pubkey                               # this install's public key (hex), to verify elsewhere
+```
+
+`verify` reports what went wrong at the first record that doesn't check out:
+one altered in place (hash or signature), one removed, inserted or reordered
+(seq and prev_hash), or a truncated tail. Verifying and exporting never need
+the entitlement, so a log keeps its value after a plan lapses.
 
 **Closing and cleaning up.** Press `x` on an agent in the sidebar (twice for one
 that's still running) or run `copse close <id>` to stop it and hide it. Stopping means

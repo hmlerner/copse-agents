@@ -672,6 +672,77 @@ def account(ctx: typer.Context) -> None:
     raise typer.Exit(account_mod.run(cfg, repo_root, list(ctx.args), echo=typer.echo))
 
 
+# -- copse audit (copse Enterprise: the local tamper-evident audit chain) ---------------------
+
+audit_app = typer.Typer(no_args_is_help=True,
+                        help="copse Enterprise: the local tamper-evident audit log "
+                             "(~/.copse/audit; see `src/copse/pro/audit_chain.py`).")
+app.add_typer(audit_app, name="audit")
+
+
+def _audit_repo(repo: Optional[str]) -> str:
+    """The main repo root for ``--repo`` (default: here), or the path as given."""
+    start = repo or os.getcwd()
+    try:
+        return git.main_repo_root(start)
+    except git.GitError:
+        return os.path.abspath(start)
+
+
+@audit_app.command("verify")
+def audit_verify(
+    repo: Optional[str] = typer.Option(None, "--repo", help="The repo whose log to verify (default: here)."),
+) -> None:
+    """Recompute the chain and check every signature; exit 1 at the first broken record."""
+    from copse.pro import audit_chain
+
+    try:
+        report = audit_chain.verify(_audit_repo(repo))
+    except audit_chain.AuditError as e:
+        typer.echo(f"audit: {e}")
+        raise typer.Exit(2)
+    typer.echo(report.describe())
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+@audit_app.command("export")
+def audit_export(
+    repo: Optional[str] = typer.Option(None, "--repo", help="The repo whose log to export (default: here)."),
+    since: Optional[str] = typer.Option(None, "--since", help="Only records from this ISO 8601 time on."),
+    fmt: str = typer.Option("jsonl", "--format", help="jsonl or csv."),
+) -> None:
+    """Print the audit records (unverified) as JSONL or CSV."""
+    from copse.pro import audit_chain
+
+    start = None
+    if since:
+        try:
+            start = audit_chain.parse_time(since)
+        except ValueError:
+            typer.echo(f"audit: --since wants an ISO 8601 time, not {since!r}")
+            raise typer.Exit(2)
+    try:
+        out = audit_chain.export(_audit_repo(repo), since=start, fmt=fmt)
+    except audit_chain.AuditError as e:
+        typer.echo(f"audit: {e}")
+        raise typer.Exit(2)
+    sys.stdout.write(out)
+    sys.stdout.flush()
+
+
+@audit_app.command("pubkey")
+def audit_pubkey() -> None:
+    """This install's Ed25519 public key (hex), which every audit record is signed with."""
+    from copse.pro import audit_chain
+
+    try:
+        typer.echo(audit_chain.public_key_hex())
+    except audit_chain.AuditError as e:
+        typer.echo(f"audit: {e}")
+        raise typer.Exit(2)
+
+
 @app.command()
 def watch(
     all_repos: bool = typer.Option(False, "--all", help="Every repo, not just this one."),
