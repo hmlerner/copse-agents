@@ -177,6 +177,7 @@ def push(client=None, store=None) -> Result:
         if extra:
             path = config.user_config_path()
             merged = {**config._read_json(path), **extra}
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
         _save_state(stamp, body)
         return Result("pushed", {k: (None, v) for k, v in extra.items()})
