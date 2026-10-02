@@ -488,21 +488,15 @@ wins. When every candidate is out, the repo's `default_agent` runs. The reply sa
 what was picked and why, e.g. `weight medium -> developer (Codex at 93%, skipped developer-codex)`.
 An `agent_profile` you pass, or a milestone's `profile`, always wins over weight.
 
-**Learning is hosted only (copse Pro).** With a plan that includes it, copse
-sends a coarse summary of what happens to each worker task (review verdicts,
-times the supervisor had to step in, merged or abandoned, tokens, time) to the
-copse Pro API, and asks the API to pick a profile from `learning_candidates` when
-`assign` gets none and no milestone names one; the reply then says
-`profile chosen by learning: X`. A profile named by you or by a milestone always
-wins. The learner keeps the choice your routing would have made unless your own
-outcomes clearly show another profile does as well for less, or clearly better.
-It never experiments with your tasks, and each override says why
-(`learning picked it: <reason>`). Nothing is learned on your machine, and there is no plugin interface for
-learning: no installed package can act as a learner. The default
-`"learning": "auto"` uses the hosted learner when you're logged in to a plan that
-includes it, and nothing otherwise (see "copse Pro and Team" below); `"cloud"`
-forces it and `"off"` turns learning off. Any other value means off. If the API
-is unreachable or fails, a review, merge or delegation carries on unaffected.
+**Hosted learning (copse Pro).** With a plan that includes it, copse learns
+which of your `learning_candidates` profiles suits which kind of task, and picks
+one when `assign` gets no profile and no milestone names one (the reply says
+`learning picked it` and why). A profile you or a milestone name always wins.
+Learning is per person on Pro and per organization on Team, runs only on
+PawDelta's servers, and your data stays private (see "copse Pro and Team").
+`"learning": "auto"` (the default) uses it when your plan includes it,
+`"cloud"` forces it and `"off"` turns it off. If the API is unreachable, work
+carries on unaffected.
 
 **Plugins.** Three entry-point groups let a package extend
 copse through (`copse/plugins.py` loads them; each interface is in the module
@@ -530,8 +524,8 @@ plan that includes them.
 ## copse Pro and Team
 
 copse is complete on its own. copse Pro adds hosted learning (which profile
-to use for which kind of task, learned across every clone of a repo and
-shared within your org) and copse Team adds org policies (allowed providers
+to use for which kind of task; per person on Pro, per organization on Team,
+and kept private) and copse Team adds org policies (allowed providers
 and models, human review before merges) and an audit feed of what copse did.
 Plans and prices: https://pawdelta.com/copse#pricing.
 
