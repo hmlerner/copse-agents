@@ -137,9 +137,12 @@ def test_unreviewed_sync_still_needs_a_review(db, repo, monkeypatch):
 # -- 5. the supervisor sizes work ------------------------------------------------
 
 def test_supervisor_is_told_to_size_work_first():
+    from copse.autopilot import DELEGATION
+
     text = load_profile("supervisor").prompt
-    assert "Size first" in text and "Delegate only work that is genuinely parallel" in text
+    assert "Size first" in text and "delegation rule" in text   # the rule itself comes from config
     assert "Keep your own context small" in text
+    assert "genuinely parallel" in DELEGATION["conservative"]
 
 
 # -- 6. inbox delivery ------------------------------------------------------------
