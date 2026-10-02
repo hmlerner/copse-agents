@@ -157,3 +157,59 @@ def test_stop_hook_hands_over_lost_notice(db, boss, monkeypatch):
     assert _bare(out["reason"]) == "copse: 1 new message (from w1). Call read_messages."
     # The notice is now outstanding: a second stop doesn't repeat it.
     assert not agents.handle_hook(db, "boss", "stop", {})
+
+
+@pytest.fixture
+def via_inbox(monkeypatch):
+    """The supervisor has a Claude Code inbox; texts sent to it are recorded."""
+    from copse import inbox
+
+    sent = []
+    monkeypatch.setattr(inbox, "usable", lambda a: True)
+    monkeypatch.setattr(inbox, "send", lambda a, text, **k: sent.append(text) or True)
+    return sent
+
+
+def test_watched_supervisor_gets_stop_reminders_through_its_inbox(db, boss, pushed, via_inbox):
+    # A blocked stop shows as "Stop hook error" in Claude Code, so a chat with
+    # an inbox gets the same text as a message and the stop goes through.
+    db.add_autopilot("boss")
+    agents.send_message(db, "boss", "the result", sender_id="w1")
+    _age_notices(db, db.NOTICE_TTL + 1)
+    assert agents.handle_hook(db, "boss", "stop", {}) is None
+    assert len(via_inbox) == 1 and "read_messages" in via_inbox[0]
+    assert db.get_agent("boss").status == "processing"     # the reminder starts its next turn
+    # Ignored, it isn't repeated on every stop: once per notice window.
+    assert agents.handle_hook(db, "boss", "stop", {}) is None
+    assert len(via_inbox) == 1
+
+
+def test_queued_message_goes_through_the_inbox_at_stop(db, boss, via_inbox):
+    db.enqueue("boss", "a queued message", "w1")
+    assert agents.handle_hook(db, "boss", "stop", {}) is None
+    assert via_inbox == ["a queued message"]
+
+
+def test_inbox_failure_falls_back_to_blocking(db, boss, monkeypatch):
+    from copse import inbox
+
+    monkeypatch.setattr(inbox, "usable", lambda a: True)
+    monkeypatch.setattr(inbox, "send", lambda *a, **k: False)
+    db.enqueue("boss", "a queued message", "w1")
+    out = agents.handle_hook(db, "boss", "stop", {})
+    assert out == {"decision": "block", "reason": "a queued message"}
+
+
+@pytest.mark.parametrize("event", ["pre-tool", "tool-done"])
+def test_tool_hooks_mark_an_idle_agent_busy(db, boss, event):
+    # A turn begun by a finished background task runs no UserPromptSubmit,
+    # so the 'idle' its previous Stop left would otherwise stick.
+    db.set_status("boss", "idle")
+    agents.handle_hook(db, "boss", event, {"tool_name": "Bash", "tool_input": {"command": "ls"}})
+    assert db.get_agent("boss").status == "processing"
+
+
+def test_tool_hooks_leave_a_paused_agent_alone(db, boss):
+    db.set_status("boss", "paused")
+    agents.handle_hook(db, "boss", "tool-done", {})
+    assert db.get_agent("boss").status == "paused"

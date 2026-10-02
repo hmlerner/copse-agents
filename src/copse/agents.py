@@ -278,8 +278,9 @@ def _pause_when_done(agent_id: str, argv: list[str]) -> list[str]:
 
 
 def _profile_for(db: DB, agent: Agent, ws: Workspace):
-    """``agent``'s profile as launched: autopilot sessions add their guide,
-    and a chat (a supervisor) learns about the code map, if there is one.
+    """``agent``'s profile as launched: autopilot sessions add their guide, a
+    supervisor gets the repo's delegation rule, and a chat (a supervisor)
+    learns about the code map, if there is one.
     Workers get the code map in their task instead (see worker_guidance)."""
     from dataclasses import replace
 
@@ -287,8 +288,12 @@ def _profile_for(db: DB, agent: Agent, ws: Workspace):
     from copse.config import load_repo_config
 
     profile = load_profile(agent.profile, ws.repo_root)
-    if db.get_autopilot(agent.id):
-        profile = replace(profile, prompt=profile.prompt + pilot.guide(load_repo_config(ws.repo_root), ws.repo_root))
+    cfg = load_repo_config(ws.repo_root)
+    autopilot_on = db.get_autopilot(agent.id) is not None
+    if autopilot_on:
+        profile = replace(profile, prompt=profile.prompt + pilot.guide(cfg, ws.repo_root))
+    if agent.mode == "interactive" and (autopilot_on or agent.profile == "supervisor"):
+        profile = replace(profile, prompt=f"{profile.prompt}\n\n{pilot.delegation_rule(cfg)}".strip())
     if agent.mode == "interactive":
         from copse import codemap
 
@@ -1789,6 +1794,58 @@ def pre_tool_decision(db: DB, agent: Agent, payload: dict) -> dict | None:
     }}
 
 
+def _stop_decision(db: DB, agent: Agent, payload: dict, via_inbox: bool = False) -> dict | None:
+    """What the Stop hook decides: a "block" with the reason to carry on, or
+    None to let the agent stop. ``via_inbox``: the reason will be sent as an
+    inbox message rather than block the stop, so ``stop_hook_active`` never
+    caps a repeat; the unread-mail reminder is then limited like a notice."""
+    msg = db.pop_pending(agent.id)
+    if msg:
+        db.set_status(agent.id, "processing")
+        return {"decision": "block", "reason": msg.body}
+    if agent.mode == "interactive" and db.unread_count(agent.id):
+        ap = db.get_autopilot(agent.id)
+        if (ap is not None and ap.enabled and not payload.get("stop_hook_active")
+                and (not via_inbox or db.claim_notice(agent.id))):
+            # An autopilot supervisor doesn't stop with mail it hasn't read.
+            db.set_status(agent.id, "processing")
+            return {"decision": "block", "reason": (
+                "[copse autopilot] You have unread messages. Call read_messages "
+                "before you stop.")}
+        claimed = None if payload.get("stop_hook_active") else db.claim_notice(agent.id)
+        if claimed:  # the notice never went out (or was lost): hand it over now
+            db.set_status(agent.id, "processing")
+            return {"decision": "block", "reason": unread_notice(db, claimed)}
+    needs_report = agent.mode in REPORTING_MODES and agent.result is None
+    if needs_report and not payload.get("stop_hook_active"):
+        db.set_status(agent.id, "processing")
+        if agent.mode == "review":
+            return {
+                "decision": "block",
+                "reason": "You haven't called the copse `submit_review` tool yet. "
+                "Call it now with your verdict and findings.",
+            }
+        return {
+            "decision": "block",
+            "reason": "You haven't called the copse `report_result` tool yet. "
+            "If your task is finished, commit your work and call it now. "
+            "If you are blocked, call it with a description of what's blocking you.",
+        }
+    if needs_report:
+        db.set_status(agent.id, "idle")
+        tell_parent_unreported(db, agent)
+        return None
+    if agent.mode == "interactive":
+        from copse import autopilot as pilot
+
+        decision = pilot.on_stop(db, agent, payload)
+        if decision:
+            db.set_status(agent.id, "processing")
+            return decision
+    db.set_status(agent.id, "idle")
+    return None
+
+
 def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None:
     """Called from ``copse _hook <event>`` inside the agent's own process tree.
     Returns JSON for Claude Code to read on stdout, or None."""
@@ -1837,53 +1894,28 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
         if "permission" in text or "approval" in text:
             db.set_status(agent_id, "waiting")
     elif event == "pre-tool":
+        # A tool call means a turn is running. The hooks can miss its start:
+        # a turn that a finished background task or a queued message begins
+        # runs no UserPromptSubmit after the last Stop set 'idle', and the
+        # dashboard's one-sample screen read never overrides 'idle'.
+        db.set_status(agent_id, "processing", only_if="idle")
         return pre_tool_decision(db, agent, payload)
     elif event == "tool-done":
         db.set_status(agent_id, "processing", only_if="waiting")
+        db.set_status(agent_id, "processing", only_if="idle")  # see "pre-tool"
     elif event == "stop":
-        msg = db.pop_pending(agent_id)
-        if msg:
-            db.set_status(agent_id, "processing")
-            return {"decision": "block", "reason": msg.body}
-        if agent.mode == "interactive" and db.unread_count(agent_id):
-            ap = db.get_autopilot(agent_id)
-            if ap is not None and ap.enabled and not payload.get("stop_hook_active"):
-                # An autopilot supervisor doesn't stop with mail it hasn't read.
-                db.set_status(agent_id, "processing")
-                return {"decision": "block", "reason": (
-                    "[copse autopilot] You have unread messages. Call read_messages "
-                    "before you stop.")}
-            claimed = None if payload.get("stop_hook_active") else db.claim_notice(agent_id)
-            if claimed:  # the notice never went out (or was lost): hand it over now
-                db.set_status(agent_id, "processing")
-                return {"decision": "block", "reason": unread_notice(db, claimed)}
-        needs_report = agent.mode in REPORTING_MODES and agent.result is None
-        if needs_report and not payload.get("stop_hook_active"):
-            db.set_status(agent_id, "processing")
-            if agent.mode == "review":
-                return {
-                    "decision": "block",
-                    "reason": "You haven't called the copse `submit_review` tool yet. "
-                    "Call it now with your verdict and findings.",
-                }
-            return {
-                "decision": "block",
-                "reason": "You haven't called the copse `report_result` tool yet. "
-                "If your task is finished, commit your work and call it now. "
-                "If you are blocked, call it with a description of what's blocking you.",
-            }
-        if needs_report:
-            db.set_status(agent_id, "idle")
-            tell_parent_unreported(db, agent)
-            return None
-        if agent.mode == "interactive":
-            from copse import autopilot as pilot
+        from copse import inbox
 
-            decision = pilot.on_stop(db, agent, payload)
-            if decision:
-                db.set_status(agent_id, "processing")
-                return decision
-        db.set_status(agent_id, "idle")
+        # Claude Code shows any blocked stop as "Stop hook error" in the chat.
+        # Where a person watches (an interactive agent with an inbox), copse
+        # lets the stop happen and sends the same text through the inbox
+        # instead: it arrives as a message from copse and starts the next turn.
+        if agent.mode == "interactive" and inbox.usable(agent):
+            decision = _stop_decision(db, agent, payload, via_inbox=True)
+            if decision and inbox.send(agent, decision["reason"]):
+                return None
+            return decision  # nothing to say, or the inbox failed: block after all
+        return _stop_decision(db, agent, payload)
     elif event == "codex-notify":
         # Codex's notify command runs when a turn completes; it can't block the
         # stop, so a queued message is typed into the pane instead.
