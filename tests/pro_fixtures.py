@@ -14,7 +14,6 @@ import time
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from copse.learning import LearningPlugin
 from copse.pro import license
 
 TEST_KID = "test-kid-1"
@@ -216,28 +215,6 @@ class FakeBackend(FakeTransport):
 @pytest.fixture
 def backend(signing_key):
     return FakeBackend(signing_key)
-
-
-class SpyLocal(LearningPlugin):
-    """A stand-in for copse-pro's local learner: remembers what it was told
-    and suggests the last candidate, so its answers are recognisable."""
-
-    def __init__(self):
-        self.recorded: list[tuple[str | None, str]] = []
-        self.suggested = 0
-
-    def record(self, task, outcome):
-        self.recorded.append((task.agent_id, outcome.event))
-
-    def suggest(self, task, candidates):
-        self.suggested += 1
-        return candidates[-1]
-
-    def report(self, reset=False):
-        return f"spy: {len(self.recorded)} outcome(s)"
-
-    def done(self, agent_id) -> bool:
-        return any(a == agent_id and e in ("merged", "removed_unmerged") for a, e in self.recorded)
 
 
 ROOT_SHA = "a" * 40

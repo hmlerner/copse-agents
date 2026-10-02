@@ -6,7 +6,7 @@ the environment. Every path that would leave the machine asks here first:
 
 * ``copse.pro`` refuses every backend request (login, refresh, entitlement,
   JWKS, learning, team policy, audit events); see :func:`guard`. Learning
-  falls back to the local learner, the team policy comes from an offline
+  makes no suggestions, the team policy comes from an offline
   file (``.copse/policy.json``, same schema as the org policy), events are
   not recorded, and the entitlement is the offline license installed with
   ``copse account license install`` (never refreshed).

@@ -392,7 +392,7 @@ class ProAccount(_OrgCommands):
                       "the entitlement updates on its next refresh)")
         self._say(f"  features  {', '.join(sorted(ent.features)) or '-'}")
         cloud = "learning" in ent.features and not ent.in_grace
-        self._say(f"  learning  {'cloud (hosted learning active)' if cloud else 'local only'}"
+        self._say(f"  learning  {'cloud (hosted learning active)' if cloud else 'off (no hosted learning)'}"
                   + ("" if cloud or 'learning' not in ent.features
                      else " -- offline; hosted learning resumes after a refresh"))
         self._say(f"  expires   {_when(ent.exp)}")

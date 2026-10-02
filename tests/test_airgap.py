@@ -24,7 +24,7 @@ from copse.pro.team_events import ProEvents, Spool
 from copse.pro.team_policy import ProPolicy
 from copse.profiles import Profile, _parse
 from pro_fixtures import (  # noqa: F401 - fixtures
-    BASE, SpyLocal, backend, claims, fixed_identity, pro_env, sign, signing_key, token,
+    BASE, backend, claims, fixed_identity, pro_env, sign, signing_key, token,
 )
 
 ORG = "org_gap1"
@@ -263,30 +263,18 @@ def test_spooled_events_from_an_online_run_stay_put(on, backend, tmp_path, fixed
     assert backend.calls == []
 
 
-def test_learning_falls_back_to_the_local_learner(on, backend, tmp_path, fixed_identity):
+def test_learning_sends_nothing_and_suggests_nothing(on, backend, tmp_path, fixed_identity):
     store = login(backend, claims(features=["learning"]))
-    spy = SpyLocal()
-    learner = CloudLearner(str(tmp_path), local=spy, store=store, client=client(backend),
-                           start_thread=False)
+    learner = CloudLearner(str(tmp_path), store=store, client=client(backend), start_thread=False)
     assert not learner.active()
     task = TaskInfo(repo_root=str(tmp_path), task="fix the bug", agent_id="a1",
                     profile="developer", weight="light")
-    assert learner.suggest(task, ["a", "b", "c"]) == "c"            # the spy's answer
+    assert learner.suggest(task, ["a", "b", "c"]) is None
     learner.record(task, Outcome(event="merged", checks_passed=True))
     assert learner.flush()
-    assert spy.recorded == [("a1", "merged")] and spy.suggested == 1
     assert learner.queue.empty()
     assert backend.calls == []
     assert "inactive" in learner.report()
-
-
-def test_learning_without_a_local_learner_suggests_nothing(on, backend, tmp_path, fixed_identity):
-    store = login(backend, claims(features=["learning"]))
-    learner = CloudLearner(str(tmp_path), local=None, store=store, client=client(backend),
-                           start_thread=False)
-    learner.local = None
-    assert learner.suggest(TaskInfo(repo_root=str(tmp_path), task="t"), ["a", "b"]) is None
-    assert backend.calls == []
 
 
 def test_ci_token_exchange_and_ci_token_commands_are_refused(on, backend, monkeypatch):

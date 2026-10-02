@@ -12,7 +12,7 @@ from copse.pro import auth, credentials, orgkey
 from copse.pro.learning import CloudLearner
 from copse.pro.orgkey import OrgKey, OrgKeys, normalize_remote, repo_identity
 from pro_fixtures import (  # noqa: F401 - fixtures
-    BASE, SpyLocal, backend, claims, pro_env, sign, signing_key,
+    BASE, backend, claims, pro_env, sign, signing_key,
 )
 
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false",
@@ -138,8 +138,8 @@ def logged_in(backend, tmp_path, org="org_1"):
     return store
 
 
-def learner(backend, store, tmp_path, repo, local=None):
-    return CloudLearner(str(repo), local, client=auth.Client(BASE, backend), store=store,
+def learner(backend, store, tmp_path, repo):
+    return CloudLearner(str(repo), client=auth.Client(BASE, backend), store=store,
                         key_store=credentials.FileStore(tmp_path / "pro", account="learning-keys"),
                         cost=lambda n: 1, start_thread=False)
 
@@ -176,14 +176,12 @@ def test_different_orgs_give_different_keys(learning_backend, tmp_path):
 def test_no_identity_means_nothing_is_sent(learning_backend, tmp_path):
     repo = new_repo(tmp_path / "empty", commit=False)
     store = logged_in(learning_backend, tmp_path)
-    local = SpyLocal()
-    lr = learner(learning_backend, store, tmp_path, repo, local)
+    lr = learner(learning_backend, store, tmp_path, repo)
     lr.record(task(repo), Outcome("merged"))
     lr.flush()
-    assert lr.suggest(task(repo), ["developer", "reviewer"]) == "reviewer"   # the local learner's pick
+    assert lr.suggest(task(repo), ["developer", "reviewer"]) is None
     assert learning_backend.records == [] and learning_backend.suggests == []
     assert learning_backend.key_fetches == []
-    assert local.done("w1")                          # still learned locally
 
 
 def test_a_key_id_change_triggers_a_refetch(learning_backend, tmp_path):
@@ -228,7 +226,7 @@ def test_malformed_keys_are_refused(backend, tmp_path):
 def test_key_rotated_409_refetches_and_payload_names_the_key(learning_backend, tmp_path):
     repo = new_repo(tmp_path / "r")
     store = logged_in(learning_backend, tmp_path, org="org_team")
-    lr = learner(learning_backend, store, tmp_path, repo, SpyLocal())
+    lr = learner(learning_backend, store, tmp_path, repo)
     lr.suggest(task(repo), ["developer", "reviewer"])
     assert (learning_backend.suggests[-1]["org_id"], learning_backend.suggests[-1]["key_id"]) == \
         ("org_team", "k1")
@@ -236,7 +234,7 @@ def test_key_rotated_409_refetches_and_payload_names_the_key(learning_backend, t
     ok = learning_backend.routes["POST /learning/suggest"]
     learning_backend.routes["POST /learning/suggest"] = \
         lambda f, h: (409, {"error": "key_rotated", "key_id": "k2"})
-    assert lr.suggest(task(repo), ["developer", "reviewer"]) == "reviewer"     # local fallback
+    assert lr.suggest(task(repo), ["developer", "reviewer"]) is None     # no suggestion this time
     learning_backend.routes["POST /learning/suggest"] = ok
     lr.suggest(task(repo), ["developer", "reviewer"])
     assert learning_backend.key_fetches == ["org_team", "org_team"]

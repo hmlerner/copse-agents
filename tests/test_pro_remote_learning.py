@@ -1,5 +1,5 @@
 """The cloud learner: what it sends, what it never sends, and how it falls
-back (to an installed local learner, else to no suggestion)."""
+back (to no suggestion: the learner only ever runs on the server)."""
 import base64
 import hashlib
 import io
@@ -19,7 +19,7 @@ from copse.pro import learning as cloud
 from copse.pro.learning import CloudLearner
 from copse.pro.orgkey import OrgKey
 from pro_fixtures import (  # noqa: F401 - fixtures
-    BASE, SpyLocal, backend, claims, fixed_identity, pro_env, sign, signing_key, token,
+    BASE, backend, claims, fixed_identity, pro_env, sign, signing_key, token,
 )
 
 REPO = "/work/secret-client-project"
@@ -70,15 +70,14 @@ def login_as(backend, store, features=("learning",)):
 def parts(tmp_path, remote, fixed_identity):
     store = credentials.FileStore(tmp_path / "pro")
     secrets_ = credentials.FileStore(tmp_path / "pro", account="learning-keys")
-    local = SpyLocal()
     login_as(remote, store)
-    return store, secrets_, local
+    return store, secrets_
 
 
 def make(parts, backend, **kw):
-    store, secrets_, local = parts
+    store, secrets_ = parts
     kw.setdefault("cost", lambda n: COSTS.get(n, 2))
-    return CloudLearner(REPO, kw.pop("local", local), client=auth.Client(BASE, backend), store=store,
+    return CloudLearner(REPO, client=auth.Client(BASE, backend), store=store,
                         key_store=secrets_, start_thread=kw.pop("start_thread", False), **kw)
 
 
@@ -112,21 +111,6 @@ def test_record_payload_keys_and_contents(parts, remote):
         assert set(body) <= cloud.RECORD_KEYS
 
 
-def test_review_rounds_come_from_the_local_ledger_when_there_is_one(parts, remote):
-    class Row:
-        review_rounds, escalations = 4, 2
-
-    class Ledger:
-        def get(self, agent_id):
-            return Row() if agent_id == AGENT else None
-
-    parts[2].store = Ledger()
-    lr = make(parts, remote)
-    lr.record(task(), Outcome("merged"))
-    lr.flush()
-    assert (remote.records[0]["review_rounds"], remote.records[0]["escalations"]) == (4, 2)
-
-
 def test_features_are_only_kind_and_size_one_hots(parts, remote):
     lr = make(parts, remote)
     lr.record(task(), Outcome("merged"))
@@ -151,7 +135,6 @@ def test_suggest_payload_keys_and_costs(parts, remote):
     assert body["candidate_cost"] == {"developer": 2, "reviewer": 3, "cheap": 0}
     assert body["weight"] == "heavy"
     no_forbidden(body)
-    assert parts[2].suggested == 0
 
 
 def test_undeclared_or_unknown_weight_is_null(parts, remote):
@@ -166,16 +149,8 @@ def test_unsafe_profile_names_are_never_sent(parts, remote):
     lr.record(task(profile="my profile/../x"), Outcome("merged"))
     lr.flush()
     assert remote.records == []
-    assert lr.suggest(task(), ["developer", "/etc/passwd"]) == "/etc/passwd"   # local answered
+    assert lr.suggest(task(), ["developer", "/etc/passwd"]) is None
     assert remote.suggests == []
-
-
-def test_both_local_and_remote_record(parts, remote):
-    lr = make(parts, remote)
-    lr.record(task(), Outcome("merged", checks_passed=True))
-    lr.flush()
-    assert parts[2].done(AGENT)
-    assert len(remote.records) == 1
 
 
 def test_records_are_sent_by_the_background_thread(parts, remote):
@@ -200,7 +175,6 @@ def test_the_record_queue_is_bounded(parts, remote, monkeypatch):
     for i in range(5):
         lr.record(task(agent_id=f"w{i}"), Outcome("merged"))
     assert lr.queue.qsize() == 3 and lr.dropped == 2
-    assert parts[2].done("w4")      # still recorded locally
 
 
 def test_cost_rank_guesses_from_the_profile(tmp_path):
@@ -259,13 +233,13 @@ def test_the_legacy_install_secret_is_never_used(parts, remote, tmp_path):
     assert cloud.install_secret(legacy) == bytes.fromhex("ab" * 32)
     remote.key_status = (403, {"error": "entitlement_required"})
     lr = make(parts, remote)
-    assert lr.suggest(task(), ["developer", "reviewer"]) == "reviewer"
+    assert lr.suggest(task(), ["developer", "reviewer"]) is None
     lr.record(task(), Outcome("merged"))
     lr.flush()
     assert remote.records == [] and remote.suggests == []
 
 
-def test_no_org_key_means_local_only(parts, remote):
+def test_no_org_key_means_nothing_is_sent(parts, remote):
     remote.key_status = (403, {"error": "forbidden"})
     fallback_case(parts, remote)
     assert remote.records == [] and remote.suggests == []
@@ -276,28 +250,26 @@ def test_no_org_key_means_local_only(parts, remote):
 
 def fallback_case(parts, remote):
     lr = make(parts, remote)
-    pick = lr.suggest(task(), ["developer", "reviewer"])
+    assert lr.suggest(task(), ["developer", "reviewer"]) is None   # copse routes by weight
     lr.record(task(), Outcome("merged"))
     lr.flush()
-    assert pick == "reviewer" and parts[2].suggested == 1        # local answered
-    assert parts[2].done(AGENT)                                   # local recorded
     return lr
 
 
-def test_unentitled_stays_local_without_calling_the_backend(parts, remote):
+def test_unentitled_sends_nothing(parts, remote):
     login_as(remote, parts[0], features=("autopilot",))
     calls = len(remote.calls)
     fallback_case(parts, remote)
     assert len(remote.calls) == calls
 
 
-def test_not_logged_in_stays_local(parts, remote):
+def test_not_logged_in_sends_nothing(parts, remote):
     parts[0].delete()
     fallback_case(parts, remote)
     assert remote.records == [] and remote.suggests == []
 
 
-def test_offline_falls_back_to_local(parts, remote):
+def test_offline_gives_no_suggestion(parts, remote):
     remote.routes["POST /learning/suggest"] = [auth.TransportError("down")]
     lr = fallback_case(parts, remote)
     assert not lr.active()     # backs off instead of retrying every call
@@ -307,7 +279,7 @@ def test_offline_falls_back_to_local(parts, remote):
 @pytest.mark.parametrize("status,error", [(429, "rate_limited"), (429, "daily_limit"),
                                           (403, "entitlement_required"), (500, "internal_error"),
                                           (422, "invalid_request")])
-def test_server_refusals_fall_back_to_local(parts, remote, status, error):
+def test_server_refusals_give_no_suggestion(parts, remote, status, error):
     remote.routes["POST /learning/suggest"] = [(status, {"error": error})]
     lr = fallback_case(parts, remote)
     if status in (429, 403):
@@ -319,7 +291,7 @@ def test_slow_suggest_falls_back_within_the_timeout(parts, remote, monkeypatch):
     remote.routes["POST /learning/suggest"] = lambda f, h: (time.sleep(2), (200, {"profile": "developer"}))[1]
     lr = make(parts, remote)
     t0 = time.monotonic()
-    assert lr.suggest(task(), ["developer", "reviewer"]) == "reviewer"
+    assert lr.suggest(task(), ["developer", "reviewer"]) is None
     assert time.monotonic() - t0 < 1.0
 
 
@@ -329,7 +301,7 @@ def test_suggest_timeout_is_at_most_two_seconds():
 
 def test_a_profile_outside_the_candidates_is_ignored(parts, remote):
     remote.routes["POST /learning/suggest"] = [(200, {"profile": "rogue"})]
-    assert make(parts, remote).suggest(task(), ["developer", "reviewer"]) == "reviewer"
+    assert make(parts, remote).suggest(task(), ["developer", "reviewer"]) is None
 
 
 def test_errors_never_reach_copse(parts, remote, monkeypatch):
@@ -338,12 +310,9 @@ def test_errors_never_reach_copse(parts, remote, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("broken")
 
-    monkeypatch.setattr(lr.local, "record", boom)
     monkeypatch.setattr(cloud, "record_payload", boom)
     monkeypatch.setattr(cloud, "suggest_payload", boom)
     lr.record(task(), Outcome("merged"))
-    assert lr.suggest(task(), ["developer", "reviewer"]) == "reviewer"
-    monkeypatch.setattr(lr.local, "suggest", boom)
     assert lr.suggest(task(), ["developer", "reviewer"]) is None
     assert "cloud learning" in lr.report()
 
@@ -354,46 +323,21 @@ def test_report_says_whether_cloud_is_active(parts, remote):
     assert "inactive" in make(parts, remote).report()
 
 
-# -- without a local learner (copse without copse-pro) -----------------------------------------------
+# -- nothing is learned on this machine -------------------------------------------------------------
 
 
-def test_no_local_learner_means_no_suggestion_when_hosted_is_unavailable(parts, remote):
-    remote.routes["POST /learning/suggest"] = [auth.TransportError("down")]
-    lr = make(parts, remote, local=None)
-    assert lr.local is None
-    assert lr.suggest(task(), ["developer", "reviewer"]) is None
-    lr.record(task(), Outcome("review", approved=True))
-    lr.record(task(), Outcome("merged"))
-    assert "no local learner" in lr.report()
+def test_the_report_says_learning_happens_on_the_server(parts, remote):
+    assert "nothing is learned on this machine" in make(parts, remote).report()
 
 
-def test_no_local_learner_still_records_and_suggests_remotely(parts, remote):
-    lr = make(parts, remote, local=None)
+def test_records_and_suggestions_go_to_the_server(parts, remote):
+    lr = make(parts, remote)
     assert lr.suggest(task(), ["developer", "reviewer"]) == "developer"
     lr.record(task(), Outcome("review", approved=True))
     lr.record(task(), Outcome("merged"))
     lr.flush()
     assert [r["event"] for r in remote.records] == ["review", "merged"]
     assert remote.records[-1]["review_rounds"] == 1
-
-
-def test_the_local_fallback_is_the_installed_local_plugin(monkeypatch, tmp_path):
-    spy = SpyLocal()
-
-    class EP:
-        name, value = "local", "copse_pro.learning:make"
-
-        def load(self):
-            return lambda repo_root: spy
-
-    assert cloud.local_plugin(str(tmp_path)) is None      # nothing named "local" installed here
-    assert CloudLearner(str(tmp_path), start_thread=False).local is None
-    real = plugins.entry_points
-    monkeypatch.setattr(plugins, "entry_points",
-                        lambda group: [EP()] if group == plugins.LEARNING else real(group=group))
-    plugins.reset()
-    assert cloud.local_plugin(str(tmp_path)) is spy
-    assert CloudLearner(str(tmp_path), start_thread=False).local is spy
 
 
 # -- wiring --------------------------------------------------------------------------------------------
@@ -410,7 +354,7 @@ def test_cloud_entry_point_loads_through_copse():
     assert [e.value for e in entry_points(group="copse.learning") if e.name == "cloud"] == \
         ["copse.pro.learning:make"]
     p = copse_learning.plugin(RepoConfig(learning="cloud"), REPO)
-    assert isinstance(p, CloudLearner) and p.local is None
+    assert isinstance(p, CloudLearner)
 
 
 def test_learning_defaults_to_auto_which_is_off_until_entitled(remote, tmp_path):
@@ -453,4 +397,4 @@ def test_account_status_shows_cloud_learning(parts, remote):
     login_as(remote, parts[0], features=())
     out = io.StringIO()
     account.ProAccount(REPO, store=parts[0], transport=remote, out=out).run(["status"])
-    assert "local only" in out.getvalue()
+    assert "off (no hosted learning)" in out.getvalue()
