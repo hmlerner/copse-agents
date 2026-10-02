@@ -139,9 +139,9 @@ and you're back at your prompt. The whole session is paused: its
 workers stop too, and everything is kept (branches, worktrees,
 queued messages, and each agent's Claude conversation). `copse continue` (or
 `copse -c`) picks up the most recent paused session and lists the others by id
-(`copse continue <id>`). Plain `copse` always starts fresh. If a session is still running in that folder, it asks first: open that one, start the new one in its own worktree (branch `copse/session-N`, cut from what you have checked out, so both run at once without sharing files), or pause it and start fresh. Without a terminal to ask in, it pauses the old one. `copse sessions` lists
+(`copse continue <id>`). Plain `copse` always starts fresh. If a session is still running in that folder, it asks first: open that one, start the new one in its own worktree (branch `copse/session-N`, cut from what you have checked out, so they run at once without sharing files), or pause it and start fresh. There's no limit: each further `copse` there can start another session in its own worktree (`copse/session-2`, `-3`, ...). Without a terminal to ask in, it pauses the old one. `copse sessions` lists
 what's paused. copse keeps the newest 3 paused sessions per repo for up to 7 days;
-cleanup never merges anything or deletes branches, and worktrees with uncommitted
+cleanup never merges anything or deletes an unmerged branch, and worktrees with uncommitted
 changes are kept.
 
 **Not in a git repo?** `copse` still works. It starts a *scratch session*: a
@@ -158,7 +158,7 @@ copse new fix-login -p "Fix the login redirect bug; add a test"
 copse ls                                    # workspaces, agents, ahead/behind
 copse diff fix-login --stat
 copse pr fix-login                          # push + gh pr create
-copse rm fix-login                          # keeps the branch
+copse rm fix-login                          # deletes the branch only if it's merged (-K keeps it)
 ```
 
 ## Recommended use
@@ -298,6 +298,7 @@ your own status line prints, so what you see doesn't change.
 | `copse start [-a PROFILE] [-p PROMPT] [--no-watch] [--no-autopilot] [-b BRANCH] [-w PATH]` | the same, with options; `-b`/`-w` run it in that branch's worktree (created if needed, or the one you already made), which gets the repo's `.copse` config |
 | `copse handover --to BRANCH\|PATH [-n NOTE]` | hand the session to a new supervisor there: goal and milestones, workers, queued tasks and your note move across; the old one is paused |
 | `copse autopilot [on\|off\|check]` | the goal's progress; turn autopilot on or off; run the checks now |
+| `copse delegation [conservative\|balanced\|fast]` | how readily the supervisor delegates: fewest tokens, the default, or quickest |
 | `copse transfer [REPO] [--from SESSION] [-b BRANCH]` | move a scratch session's work into a real repo |
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
@@ -430,6 +431,8 @@ Autopilot, merge gates and cleanup:
 | `add_dirs` | `[]` | directories outside the worktree that Claude Code agents may use (`--add-dir`; full tool access, see "Directories outside the workspace") |
 | `local_models` | `true` | when a native profile points at Ollama on this machine and it isn't running, `copse` starts `ollama serve` in the background (with the context length the profiles need) and loads their models; `false` leaves it to you |
 | `sidebar` | `"left"` | where the dashboard sits in each window: `"left"` of the chat, or `"bottom"` (full-width rows under it) |
+| `delegation` | `"balanced"` | how readily the supervisor hands work to workers. `"conservative"` does most work in its own chat (fewest tokens), `"fast"` splits any multi-part request across parallel workers straight away (quickest, most tokens). `copse delegation fast` saves it for every repo and session (in `~/.copse/config.json`; `--repo` for this repo only) and tells a running supervisor |
+| `delete_merged_branches` | `true` | removing a worktree (after a merge, `copse rm`, `copse prune`, session cleanup) also deletes its branch once every commit is in its base, so finished branches don't pile up. An unmerged branch is always kept; `false` keeps them all. If GitHub keeps merged PR branches, the first `copse pr` in a repo offers to turn on its automatic deletion with your `gh` login (repo admins only) |
 | `pr_footer` | `true` | `copse pr` and `copse ci` end the PR description with one line: "🌲 Built in parallel and verified with copse" (a link). `false` leaves it out. Never added to commit messages |
 | `message_delivery` | `"pull"` | how agent and copse messages reach an interactive supervisor: `"pull"` keeps them unread and delivers one notice ("copse (16:25:03): 2 new messages (from 9f742c5c, pipeline). Call read_messages."; the time keeps Claude Code from dropping a repeat; the sidebar shows an unread count), `"push"` delivers each message's text. Messages you send (`copse send`, typing) and messages to workers are always pushed |
 | `learning` | `"auto"` | which learning plugin records how worker tasks turned out and suggests profiles (see below): `"auto"` is copse Pro's hosted learning when your plan includes it and nothing otherwise; `"off"`; or an installed plugin's name |
@@ -775,7 +778,9 @@ find by branch or workspace name/id.
 
 `.copse/config.local.json` is gitignored and overrides keys for you only. For
 `setup`/`teardown` it can also give `{"before": [...], "after": [...]}` to run
-commands around the team's list.
+commands around the team's list. `~/.copse/config.json` holds your own defaults
+for every repo (any key except the command lists, like `delegation` or
+`sidebar`); a repo's two files override it.
 
 Setup, teardown, and agents all see these variables: `COPSE_ROOT_PATH`,
 `COPSE_WORKSPACE_PATH`, `COPSE_WORKSPACE_NAME`, `COPSE_WORKSPACE_ID`,

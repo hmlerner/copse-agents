@@ -37,6 +37,12 @@ def user_profiles_dir() -> Path:
     return copse_home() / "agents"
 
 
+def user_config_path() -> Path:
+    """``~/.copse/config.json``: this person's defaults for every repo. A
+    repo's own .copse/config.json and config.local.json override it."""
+    return copse_home() / CONFIG_FILE
+
+
 WEIGHTS = ("light", "medium", "heavy")
 DEFAULT_ROUTING = {
     "light": ["developer-local", "developer"],
@@ -71,6 +77,7 @@ class RepoConfig:
     review_rounds: int = 2             # fix-and-re-review rounds the pipeline runs before asking the supervisor
     merge_into: str | None = None      # branch worker branches are cut from and merge into (None: the supervisor's / default branch)
     auto_merge_default_branch: bool = False  # let the pipeline merge into the repo's default branch on its own
+    delegation: str = "balanced"      # how readily a supervisor hands work to workers: "conservative" (save tokens), "balanced" or "fast" (save time)
     plan_first: bool = False           # workers propose a plan and wait for approval before editing
     overlap: str = "block"           # a task whose files overlap a running one: "block" or "warn"
     # Worktree pool: pre-built worktrees (checked out, files copied, setup run)
@@ -86,6 +93,7 @@ class RepoConfig:
     # Start Ollama in the background when a native profile points at it on
     # this machine and it isn't running (see copse.native.serve).
     local_models: bool = True
+    delete_merged_branches: bool = True  # removing a worktree deletes its branch once fully merged into its base
     pr_footer: bool = True             # `copse pr` / `copse ci` end the PR body with one "built with copse" line
     sidebar: str = "left"              # where the dashboard sits: "left" of the chat or "bottom"
     learning: str = "auto"             # "auto" (copse Pro's cloud learner when entitled, else off), "off", or an installed learning plugin's name (see copse.learning)
@@ -141,6 +149,7 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
     base = config_root(repo_root) / CONFIG_DIR
     shared = _read_json(base / CONFIG_FILE)
     local = _read_json(base / LOCAL_CONFIG_FILE)
+    user = user_settings()
 
     cfg = RepoConfig()
     for key in ("setup", "teardown", "copy", "checks", "add_dirs"):
@@ -150,12 +159,12 @@ def load_repo_config(repo_root: str | Path) -> RepoConfig:
                 "reviewer", "review_profile", "pre_commit", "max_agents", "check_timeout",
                 "usage_limit", "pool_size", "graphify", "stale_after", "pipeline",
                 "review_rounds", "overlap", "local_models", "merge_into",
-                "auto_merge_default_branch", "sidebar", "pr_footer", "plan_first", "learning",
+                "auto_merge_default_branch", "delete_merged_branches", "delegation", "sidebar", "pr_footer", "plan_first", "learning",
                 "learning_candidates", "limit_cooldown_minutes", "message_delivery"):
-        if key in local:
-            setattr(cfg, key, local[key])
-        elif key in shared:
-            setattr(cfg, key, shared[key])
+        for source in (local, shared, user):
+            if key in source:
+                setattr(cfg, key, source[key])
+                break
     services = local["services"] if "services" in local else shared.get("services")
     if isinstance(services, list):
         cfg.services = [s for s in services if isinstance(s, dict)]
@@ -192,6 +201,35 @@ TEMPLATE = {
     "fetch": True,
     "checks": [],
 }
+
+
+def user_settings() -> dict:
+    return _read_json(user_config_path())
+
+
+def set_user(key: str, value: object) -> Path:
+    """Set one key in ``~/.copse/config.json`` (other keys are kept)."""
+    path = user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = _read_json(path)
+    data[key] = value
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def set_local(repo_root: str | Path, key: str, value: object) -> Path:
+    """Set one key in ``.copse/config.local.json`` (gitignored: this person's
+    own settings; other keys are kept)."""
+    base = config_root(repo_root) / CONFIG_DIR
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / LOCAL_CONFIG_FILE
+    data = _read_json(path)
+    data[key] = value
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    ignore = base / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text(f"{LOCAL_CONFIG_FILE}\n", encoding="utf-8")
+    return path
 
 
 def write_template(repo_root: str | Path, values: dict | None = None) -> Path:

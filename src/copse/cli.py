@@ -606,6 +606,60 @@ def _session_root(db: DB) -> str:
     raise AssertionError
 
 
+@app.command("delegation")
+def delegation_cmd(
+    level: Optional[str] = typer.Argument(None, help="conservative, balanced or fast. Omit to show the current one."),
+    repo: bool = typer.Option(False, "--repo", help="Only for this repo (.copse/config.local.json), not every repo."),
+) -> None:
+    """How readily the supervisor hands work to workers: conservative, balanced (default) or fast.
+
+    conservative does most work in its own chat (fewest tokens); fast splits
+    work across parallel workers straight away (quickest, most tokens). It's
+    saved in ~/.copse/config.json for every repo and session (with --repo,
+    for this repo only), and a running supervisor is told at once."""
+    from copse import autopilot as pilot
+    from copse.config import RepoConfig, load_repo_config, set_local, set_user, user_settings
+
+    try:
+        root = git.out(["rev-parse", "--show-toplevel"], os.getcwd())
+    except git.GitError:
+        root = None
+    if level is None:
+        current = load_repo_config(root).delegation if root else \
+            user_settings().get("delegation", RepoConfig().delegation)
+        typer.echo(f"delegation: {current}  (conservative, balanced, fast)")
+        return
+    if level not in pilot.DELEGATIONS:
+        _fail("delegation must be conservative, balanced or fast")
+    if repo:
+        if not root:
+            _fail("--repo needs to run inside a git repo")
+        set_local(root, "delegation", level)
+        typer.echo(f"✓ delegation {level} for this repo (.copse/config.local.json)")
+    else:
+        path = set_user("delegation", level)
+        typer.echo(f"✓ delegation {level} for every repo ({path})")
+    _tell_supervisors_about_delegation(DB())
+
+
+def _tell_supervisors_about_delegation(db: DB) -> None:
+    """Send each running supervisor its repo's delegation rule as it now stands."""
+    from copse import autopilot as pilot
+    from copse.config import load_repo_config
+
+    for ws in db.find_workspaces():
+        running = _running_session(db, ws)
+        if not running:
+            continue
+        try:
+            rule = pilot.delegation_rule(load_repo_config(ws.repo_root))
+            agents.send_message(db, running.id, "[copse] The person changed how readily you delegate. "
+                                "From now on this replaces your earlier delegation rule:\n\n" + rule)
+            typer.echo(f"  told the running supervisor ({running.id})")
+        except (agents.AgentError, ValueError):
+            pass
+
+
 @app.command("autopilot")
 def autopilot_cmd(
     action: Optional[str] = typer.Argument(None, help="on, off, or check (run the milestone checks now). Omit to show progress."),
@@ -1031,6 +1085,26 @@ def pr(
     ws = _ws(DB(), workspace)
     url = _run(workspaces.pull_request, ws, title, draft)
     typer.echo(url)
+    _offer_delete_on_merge(ws.repo_root)
+
+
+def _offer_delete_on_merge(repo_root: str) -> None:
+    """The first PR in a repo where GitHub keeps merged branches: offer to
+    turn on its automatic deletion (with the person's own gh login)."""
+    if not workspaces.keeps_merged_branches(repo_root):
+        return
+    how = "`gh repo edit --delete-branch-on-merge`"
+    if sys.stdin.isatty() and typer.confirm(
+            "GitHub keeps this repo's branches after their PRs merge. Delete them automatically?",
+            default=True, err=True):
+        if workspaces.delete_branches_on_merge(repo_root):
+            typer.echo("✓ GitHub now deletes a PR's branch when it merges.", err=True)
+            return
+        typer.secho(f"couldn't change it (it needs admin rights on the repo); an admin can run {how}.",
+                    fg="yellow", err=True)
+    elif not sys.stdin.isatty():
+        typer.secho(f"tip: GitHub keeps this repo's branches after their PRs merge; {how} "
+                    "deletes them automatically.", fg="yellow", err=True)
 
 
 @app.command("merge")
@@ -1075,9 +1149,12 @@ def services_cmd(
 def rm(
     workspace: str,
     force: bool = typer.Option(False, "--force", "-f", help="Discard uncommitted changes; ignore teardown failure."),
-    delete_branch: bool = typer.Option(False, "--delete-branch", "-D", help="Also delete the branch (only if merged, unless --force)."),
+    delete_branch: Optional[bool] = typer.Option(None, "--delete-branch/--keep-branch", "-D/-K", help="Delete the branch (only if merged, unless --force), or keep it. Default: delete it once fully merged into its base."),
 ) -> None:
-    """Stop a workspace's agents and remove its worktree. Keeps the branch by default."""
+    """Stop a workspace's agents and remove its worktree; a fully merged branch goes too.
+
+    An unmerged branch is always kept; -K keeps any branch, and a repo can
+    set delete_merged_branches to false."""
     db = DB()
     ws = _ws(db, workspace)
     if ws.base_branch and os.path.isdir(ws.path) and not delete_branch:
