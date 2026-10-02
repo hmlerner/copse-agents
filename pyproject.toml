@@ -64,7 +64,7 @@ core-metadata-version = "2.4"
 [tool.hatch.build.targets.sdist]
 core-metadata-version = "2.4"
 # Local, per-user state that must never ship in a source release.
-exclude = [".claude", ".copse", "graphify-out", ".DS_Store"]
+exclude = [".claude", ".copse", "graphify-out", ".DS_Store", "assets"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
