@@ -13,15 +13,19 @@ from copse.db import Agent
 
 
 class Picker(learning.LearningPlugin):
-    def __init__(self, prefer=None):
-        self.prefer, self.asked = prefer, []
+    def __init__(self, prefer=None, reason="its record is better"):
+        self.prefer, self.reason, self.asked, self.defaults = prefer, reason, [], []
 
     def record(self, task, outcome):
         pass
 
-    def suggest(self, task, candidates):
+    def suggest(self, task, candidates, default=None):
         self.asked.append((task, list(candidates)))
-        return self.prefer if self.prefer in candidates else None
+        self.defaults.append(default)
+        if self.prefer not in candidates:
+            return None
+        self.last_reason = self.reason if self.prefer != default else None
+        return self.prefer
 
 
 @pytest.fixture(autouse=True)
@@ -144,7 +148,26 @@ def test_learning_plugin_reorders_the_remaining_candidates(db, repo, boss, monke
     assert choose(db, repo, weight="medium", why=why) == ("developer", True)
     task, candidates = plugin.asked[0]
     assert candidates == ["developer-codex", "developer"] and task.weight == "medium"
-    assert "learning picked it" in why[0]
+    assert "learning picked it: its record is better" in why[0]
+    assert plugin.defaults == ["developer-codex"]
+
+
+def test_learning_keeping_the_default_is_not_credited(db, repo, boss, monkeypatch):
+    plugin = Picker(prefer="developer-codex")
+    install(monkeypatch, plugin)
+    config(repo, learning="cloud")
+    why = []
+    assert choose(db, repo, weight="medium", why=why) == ("developer-codex", False)
+    assert "learning picked it" not in why[0]
+
+
+def test_one_candidate_never_asks_the_learner(db, repo, boss, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda cli: None if cli == "codex" else f"/usr/bin/{cli}")
+    plugin = Picker(prefer="developer")
+    install(monkeypatch, plugin)
+    config(repo, learning="cloud")
+    assert choose(db, repo, weight="medium") == ("developer", False)
+    assert plugin.asked == []
 
 
 def test_learning_only_sees_available_candidates(db, repo, boss, monkeypatch):
@@ -153,7 +176,7 @@ def test_learning_only_sees_available_candidates(db, repo, boss, monkeypatch):
     install(monkeypatch, plugin)
     config(repo, learning="cloud")
     assert choose(db, repo, weight="medium") == ("developer", False)
-    assert plugin.asked[0][1] == ["developer"]
+    assert plugin.asked == []     # a single candidate: nothing to choose, no server call
 
 
 def test_all_out_falls_back_to_the_default_agent_and_says_why(db, repo, boss, monkeypatch):

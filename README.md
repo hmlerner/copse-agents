@@ -494,7 +494,10 @@ times the supervisor had to step in, merged or abandoned, tokens, time) to the
 copse Pro API, and asks the API to pick a profile from `learning_candidates` when
 `assign` gets none and no milestone names one; the reply then says
 `profile chosen by learning: X`. A profile named by you or by a milestone always
-wins. Nothing is learned on your machine, and there is no plugin interface for
+wins. The learner keeps the choice your routing would have made unless your own
+outcomes clearly show another profile does as well for less, or clearly better.
+It never experiments with your tasks, and each override says why
+(`learning picked it: <reason>`). Nothing is learned on your machine, and there is no plugin interface for
 learning: no installed package can act as a learner. The default
 `"learning": "auto"` uses the hosted learner when you're logged in to a plan that
 includes it, and nothing otherwise (see "copse Pro and Team" below); `"cloud"`

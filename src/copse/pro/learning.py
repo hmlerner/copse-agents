@@ -143,15 +143,20 @@ def record_payload(key: OrgKey, identity: str, task: TaskInfo, outcome: Outcome,
 
 
 def suggest_payload(key: OrgKey, identity: str, task: TaskInfo, candidates: list[str],
-                    cost=None) -> dict | None:
-    """The exact body of ``POST /learning/suggest``, or None to send nothing."""
+                    cost=None, default: str | None = None) -> dict | None:
+    """The exact body of ``POST /learning/suggest``, or None to send nothing.
+    ``default`` is the profile copse would use without learning (the first
+    candidate when not given)."""
     if not candidates or len(candidates) > MAX_CANDIDATES or len(set(candidates)) != len(candidates):
         return None
     if not all(isinstance(c, str) and PROFILE_RE.match(c) for c in candidates):
         return None
+    default = default or candidates[0]
+    if default not in candidates:
+        return None
     body = {"org_id": key.org_id, "key_id": key.key_id,
             "repo_key": key.repo_key(identity), "weight": _weight(task),
-            "features": one_hot(task), "candidates": list(candidates)}
+            "features": one_hot(task), "candidates": list(candidates), "default": default}
     if cost is not None:
         costs = {}
         for c in candidates:
@@ -322,35 +327,51 @@ class CloudLearner(LearningPlugin):
 
     # -- suggesting ---------------------------------------------------------------------------
 
-    def _remote_pick(self, task: TaskInfo, candidates: list[str]) -> str | None:
+    def _remote_pick(self, task: TaskInfo, candidates: list[str],
+                     default: str) -> tuple[str, str | None] | None:
+        """(profile, reason): ``default`` with no reason when the server kept
+        it, the override and its reason otherwise."""
         org = self.org()
         identity = self.identity() if org else None
         if org is None or identity is None:
             return None
-        body = suggest_payload(self.key(org), identity, task, candidates, self.cost)
+        body = suggest_payload(self.key(org), identity, task, candidates, self.cost, default)
         if body is None:
             return None
         resp = self._post(org, "/learning/suggest", body)
         pick = resp.get("profile")
-        return pick if pick in candidates else None
+        if pick not in candidates:
+            return None
+        if resp.get("overrode") is not True or pick == default:
+            return default, None
+        reason = resp.get("reason")
+        return pick, (reason[:200] if isinstance(reason, str) and reason else None)
 
-    def suggest(self, task: TaskInfo, candidates: list[str]) -> str | None:
+    def suggest(self, task: TaskInfo, candidates: list[str],
+                default: str | None = None) -> str | None:
+        """The server's pick (``default`` when it keeps it; ``last_reason``
+        says why when it overrides), or None when it can't be asked."""
+        self.last_reason = None
+        default = default or (candidates[0] if candidates else "")
         pick = None
         try:
-            if candidates and self.active():
+            if candidates and default in candidates and self.active():
                 result: list = []
-                th = threading.Thread(target=lambda: result.append(self._safe_remote(task, candidates)),
-                                      daemon=True)
+                th = threading.Thread(
+                    target=lambda: result.append(self._safe_remote(task, candidates, default)),
+                    daemon=True)
                 th.start()
                 th.join(SUGGEST_TIMEOUT)
-                pick = result[0] if result else None
+                got = result[0] if result else None
+                if got:
+                    pick, self.last_reason = got
         except Exception:  # noqa: BLE001
             pick = None
         return pick
 
-    def _safe_remote(self, task, candidates):
+    def _safe_remote(self, task, candidates, default):
         try:
-            return self._remote_pick(task, candidates)
+            return self._remote_pick(task, candidates, default)
         except Exception as e:  # noqa: BLE001
             log.info("hosted suggest unavailable (%s)", type(e).__name__)
             return None
@@ -362,7 +383,3 @@ class CloudLearner(LearningPlugin):
                  "inactive (not logged in, offline, or your plan lacks hosted learning)")
         return (f"cloud learning: {state}\n"
                 "The learner runs on the server; nothing is learned on this machine.")
-
-
-def make(repo_root: str) -> CloudLearner:
-    return CloudLearner(repo_root)

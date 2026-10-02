@@ -402,10 +402,12 @@ def _route_by_weight(db: DB, cfg: RepoConfig, repo_root: str, weight: str, task:
             remaining.append(name)
     if not remaining:
         return None, False, f"every {weight} candidate was out ({'; '.join(skipped) or 'none configured'})"
-    pick = learning.choose(db, cfg, repo_root, task, files, candidates=remaining, weight=weight)
+    pick, reason = learning.choose_why(db, cfg, repo_root, task, files, candidates=remaining,
+                                       weight=weight, default=remaining[0])
     name = pick or remaining[0]
     why = f"weight {weight} -> {name}"
-    detail = ["learning picked it" if pick else "", *skipped]
+    picked = f"learning picked it: {reason}" if reason else "learning picked it"
+    detail = [picked if pick else "", *skipped]
     detail = [d for d in detail if d]
     if detail:
         why += f" ({', '.join(detail)})"
@@ -442,7 +444,8 @@ def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None
             if why is not None:
                 why.append(note)
         if not name:
-            name = learning.choose(db, cfg, repo_root, task, files, weight=weight) or ""
+            name = learning.choose(db, cfg, repo_root, task, files, weight=weight,
+                                   default=cfg.default_agent) or ""
             learned = bool(name)
             name = name or cfg.default_agent
     try:

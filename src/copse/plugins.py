@@ -22,8 +22,8 @@ config's ``learning`` key is ``"auto"`` (the default: ``"cloud"`` when the
 verified entitlement includes the ``learning`` feature, else ``"off"``),
 ``"cloud"`` or ``"off"``; anything else means ``"off"`` (``learning_name``).
 
-Selection. The groups select themselves: when exactly one plugin is installed in the
-group it is used, so installing one package is all a repo needs. With
+Selection. The groups select themselves: when exactly one plugin is installed
+in the group it is used, so installing one package is all a repo needs. With
 several installed, or to turn one off, the repo config's ``plugins`` object
 names the one to use per group: ``"plugins": {"events": "<name>", "policy":
 "off"}``. The events group is different: it fans out (``select_all``), so

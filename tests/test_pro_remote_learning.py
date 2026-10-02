@@ -41,6 +41,7 @@ def task(agent_id=AGENT, profile="developer", weight="heavy", text=TEXT, files=F
 def remote(backend):
     """The fake backend plus the hosted-learning endpoints."""
     backend.records, backend.suggests = [], []
+    backend.suggest_pick = None
 
     def record(form, headers):
         if not backend._bearer(headers):
@@ -52,7 +53,10 @@ def remote(backend):
         if not backend._bearer(headers):
             return 401, {"error": "invalid_token"}
         backend.suggests.append(dict(form))
-        return 200, {"profile": form["candidates"][0]}
+        pick = backend.suggest_pick or form["default"]
+        over = pick != form["default"]
+        return 200, {"profile": pick, "overrode": over,
+                     "reason": "cheaper and as good" if over else None, "key_id": form["key_id"]}
 
     backend.routes["POST /learning/record"] = record
     backend.routes["POST /learning/suggest"] = suggest
@@ -124,12 +128,30 @@ def test_features_are_only_kind_and_size_one_hots(parts, remote):
     assert not any(v for k, v in other.items() if k.startswith("kind_"))
 
 
+def test_an_override_carries_the_servers_reason(parts, remote):
+    remote.suggest_pick = "reviewer"
+    lr = make(parts, remote)
+    assert lr.suggest(task(), ["developer", "reviewer"], "developer") == "reviewer"
+    assert lr.last_reason == "cheaper and as good"
+    assert remote.suggests[0]["default"] == "developer"
+    remote.suggest_pick = None
+    assert lr.suggest(task(), ["developer", "reviewer"], "developer") == "developer"
+    assert lr.last_reason is None
+
+
+def test_a_default_outside_the_candidates_sends_nothing(parts, remote):
+    lr = make(parts, remote)
+    assert lr.suggest(task(), ["developer", "reviewer"], "other") is None
+    assert remote.suggests == []
+
+
 def test_suggest_payload_keys_and_costs(parts, remote):
     lr = make(parts, remote)
     assert lr.suggest(task(), ["developer", "reviewer", "cheap"]) == "developer"
     (body,) = remote.suggests
     assert set(body) == {"org_id", "key_id", "repo_key", "weight", "features", "candidates",
-                         "candidate_cost"}
+                         "candidate_cost", "default"}
+    assert body["default"] == "developer" and lr.last_reason is None
     assert (body["org_id"], body["key_id"]) == ("org_1", "k1")
     assert body["candidates"] == ["developer", "reviewer", "cheap"]
     assert body["candidate_cost"] == {"developer": 2, "reviewer": 3, "cheap": 0}
