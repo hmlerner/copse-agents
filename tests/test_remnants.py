@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from conftest import sh
@@ -184,17 +185,34 @@ def test_merged_worktree_with_no_agents_is_hidden_once_old(db, repo):
     assert ws.id not in {e["id"] for e in view.snapshot(db, str(repo), panes={})}
 
 
-def test_prune_removes_merged_worktrees_but_keeps_branches(db, repo):
+def test_prune_removes_merged_worktrees_and_their_branches(db, repo):
     done = merged_worker(db, repo)
     add_agent(db, done, "a1")
     open_ = unmerged_worker(db, repo)
     add_agent(db, open_, "a2")
     lines = cull.prune_retired(db)
-    assert any(done.path in line for line in lines)
+    assert any(done.path in line and "branch deleted" in line for line in lines)
     assert not os.path.exists(done.path)
     assert db.get_workspace(done.id) is None
-    assert sh(f"git branch --list {done.branch}", repo)  # branch kept
+    assert not sh(f"git branch --list {done.branch}", repo)  # merged: branch gone too
     assert os.path.isdir(open_.path) and db.get_workspace(open_.id)  # unmerged untouched
+
+
+def test_prune_keeps_merged_branches_when_the_repo_says_so(db, repo):
+    (repo / ".copse").mkdir(exist_ok=True)
+    (repo / ".copse" / "config.json").write_text('{"delete_merged_branches": false}')
+    done = merged_worker(db, repo)
+    add_agent(db, done, "a1")
+    lines = cull.prune_retired(db)
+    assert any(f"branch {done.branch} kept" in line for line in lines)
+    assert sh(f"git branch --list {done.branch}", repo)
+
+
+def test_removing_a_worktree_keeps_an_unmerged_branch(db, repo):
+    open_ = unmerged_worker(db, repo)
+    removed = workspaces.remove(db, open_)
+    assert not removed.branch_deleted and "kept" in removed.branch_note
+    assert sh(f"git branch --list {open_.branch}", repo)
 
 
 def test_prune_command_cleans_up(db, repo, monkeypatch):
@@ -269,3 +287,35 @@ def test_empty_worktree_folders_are_removed(db, repo):
 def test_procs_alive():
     assert procs.alive(os.getpid())
     assert not procs.alive(dead_pid())
+
+
+def _fake_gh(tmp_path, monkeypatch, answer):
+    gh = tmp_path / "bin" / "gh"
+    gh.parent.mkdir()
+    log = tmp_path / "gh.log"
+    gh.write_text(f'#!/bin/sh\necho "$@" >> {log}\necho {answer}\n')
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{gh.parent}{os.pathsep}{os.environ['PATH']}")
+    return log
+
+
+def test_first_pr_offers_to_delete_merged_branches_on_github(repo, tmp_path, monkeypatch):
+    from copse import cli
+
+    log = _fake_gh(tmp_path, monkeypatch, "false")
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.typer, "confirm", lambda *a, **k: True)
+    cli._offer_delete_on_merge(str(repo))
+    assert "repo edit --delete-branch-on-merge" in log.read_text()
+    log.write_text("")
+    cli._offer_delete_on_merge(str(repo))                   # asked once per repo
+    assert log.read_text() == ""
+
+
+def test_no_offer_when_github_already_deletes_them(repo, tmp_path, monkeypatch):
+    from copse import cli
+
+    log = _fake_gh(tmp_path, monkeypatch, "true")
+    monkeypatch.setattr(cli.typer, "confirm", lambda *a, **k: pytest.fail("nothing to ask"))
+    cli._offer_delete_on_merge(str(repo))
+    assert "repo edit" not in log.read_text()

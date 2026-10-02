@@ -239,7 +239,8 @@ def clean_locks(db: DB, now: float | None = None) -> int:
 
 def prune_retired(db: DB, now: float | None = None) -> list[str]:
     """Remove the worktrees of finished workers whose branch is already
-    merged (see ``view.retired``). Branches stay, and a worktree with
+    merged (see ``view.retired``), and their branches unless the repo turns
+    ``delete_merged_branches`` off. A worktree with
     uncommitted changes (or the one this is run from) is kept and reported."""
     from copse import view, workspaces
 
@@ -262,11 +263,12 @@ def prune_retired(db: DB, now: float | None = None) -> list[str]:
             done.append(f"kept {ws.branch}: merged, but {len(dirty)} uncommitted file(s) in {ws.path}")
             continue
         try:
-            workspaces.remove(db, ws)
+            removed = workspaces.remove(db, ws)
         except (workspaces.WorkspaceError, git.GitError) as e:
             done.append(f"kept {ws.branch}: {e}")
             continue
-        done.append(f"removed merged worktree {ws.path} (branch {ws.branch} kept)")
+        branch = "branch deleted" if removed.branch_deleted else f"branch {ws.branch} kept"
+        done.append(f"removed merged worktree {ws.path} ({branch})")
     return done
 
 

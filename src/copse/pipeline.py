@@ -231,8 +231,7 @@ def _remove(db: DB, ws: Workspace, keep: Agent | None = None) -> str:
             for a in db.list_agents(ws.id):
                 if a.id != keep.id and agents.is_alive(a):
                     agents._stop(db, a)
-        removed = workspaces.remove(db, ws, force=False, delete_branch=False,
-                                    keep_session=keep is not None)
+        removed = workspaces.remove(db, ws, force=False, keep_session=keep is not None)
         return f"Worktree removed; {removed.branch_note or 'branch kept'}."
     except workspaces.WorkspaceError as e:
         return f"(worktree kept: {e})"
