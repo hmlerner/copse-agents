@@ -179,6 +179,7 @@ def choose_why(db: DB, cfg: RepoConfig, repo_root: str, task: str | None = None,
         return None, None
     default = default or names[0]
     if default not in names:
+        # e.g. default_agent outside learning_candidates: it's still the baseline to beat
         names.insert(0, default)
     if len(names) < 2:
         return None, None
