@@ -74,8 +74,8 @@ class LearningPlugin(ABC):
         ``default`` is what copse would use without learning; returning it
         means the learner kept it. Sets ``last_reason`` when it overrides."""
 
-    def report(self, reset: bool = False) -> str:
-        """What ``copse learning`` prints (``--reset``: forget this repo)."""
+    def report(self) -> str:
+        """What ``copse learning`` prints."""
         return "this learner has nothing to report"
 
 

@@ -378,7 +378,7 @@ class CloudLearner(LearningPlugin):
 
     # -- reporting ------------------------------------------------------------------------------
 
-    def report(self, reset: bool = False) -> str:
+    def report(self) -> str:
         state = ("active" if self.active() else
                  "inactive (not logged in, offline, or your plan lacks hosted learning)")
         return (f"cloud learning: {state}\n"
