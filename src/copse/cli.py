@@ -395,7 +395,9 @@ def sessions_cmd() -> None:
         typer.echo("no paused sessions")
         return
     for s in found:
-        size = sum(sessions.disk_usage(w.path) for w in {db.get_workspace(m.workspace_id) for m in s.members[1:]} - {None}
+        # Members can share a workspace (a worker and its reviewer): count each once.
+        spaces = {m.workspace_id: db.get_workspace(m.workspace_id) for m in s.members[1:]}
+        size = sum(sessions.disk_usage(w.path) for w in spaces.values()
                    if w and w.kind == "worktree" and os.path.isdir(w.path))
         typer.echo(f"{_describe(s)}  ({size / 1e6:.0f} MB in worktrees)")
     typer.echo(f"Keeps the newest {sessions.KEEP} for up to {sessions.MAX_AGE_DAYS} days. `copse prune` cleans up now.")
@@ -885,8 +887,15 @@ def close(
 
 @app.command()
 def attach(workspace: Optional[str] = typer.Argument(None)) -> None:
-    """Attach to a workspace's tmux session."""
-    _attach(_ws(DB(), workspace))
+    """Attach to a workspace's tmux session, at the agent that needs you (else its busiest or newest agent)."""
+    if not sys.stdin.isatty():
+        # From a chat's `!` or a script there's no terminal to attach: tmux
+        # would switch whatever client it finds instead, or nothing at all.
+        _fail("copse attach needs a terminal: run it in a terminal window, or select the "
+              "agent in the copse sidebar and press ⏎.")
+    db = DB()
+    ws = _ws(db, workspace)
+    _attach(ws, agents.attach_target(db, ws))
 
 
 @app.command()
