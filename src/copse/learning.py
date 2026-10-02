@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TaskInfo:
-    """A task as copse describes it to a plugin. ``agent_id`` and the
+    """A task as copse describes it to the learner. ``agent_id`` and the
     profile fields are empty when a profile is still being chosen."""
     repo_root: str
     task: str = ""
@@ -58,19 +58,25 @@ class Outcome:
 
 
 class LearningPlugin(ABC):
-    """What a learning plugin implements."""
+    """What a learner implements (the hosted learner is the only one)."""
+
+    # why the last ``suggest`` overrode ``default``; None when it kept it
+    last_reason: str | None = None
 
     @abstractmethod
     def record(self, task: TaskInfo, outcome: Outcome) -> None:
         """Take note of ``outcome`` for ``task``."""
 
     @abstractmethod
-    def suggest(self, task: TaskInfo, candidates: list[str]) -> str | None:
-        """One of ``candidates`` for ``task``, or None to leave it to copse."""
+    def suggest(self, task: TaskInfo, candidates: list[str],
+                default: str | None = None) -> str | None:
+        """One of ``candidates`` for ``task``, or None to leave it to copse.
+        ``default`` is what copse would use without learning; returning it
+        means the learner kept it. Sets ``last_reason`` when it overrides."""
 
     def report(self, reset: bool = False) -> str:
         """What ``copse learning`` prints (``--reset``: forget this repo)."""
-        return "this learning plugin has nothing to report"
+        return "this learner has nothing to report"
 
 
 _learners: dict[str, LearningPlugin] = {}
@@ -139,8 +145,8 @@ def _task_info(db: DB, worker: Agent, ws: Workspace) -> TaskInfo:
 def note(db: DB, cfg: RepoConfig, worker: Agent | None, ws: Workspace, *,
          approved: bool | None = None, escalated: bool = False,
          merged: bool | None = None, checks_passed: bool = False) -> None:
-    """Tell the plugin about one event in ``worker``'s task. Does nothing
-    without a plugin, and never raises."""
+    """Tell the learner about one event in ``worker``'s task. Does nothing
+    without a learner, and never raises."""
     try:
         p = plugin(cfg, ws.repo_root)
         if p is None or worker is None:
@@ -156,28 +162,47 @@ def note(db: DB, cfg: RepoConfig, worker: Agent | None, ws: Workspace, *,
                 tokens=_tokens(db, worker), wall_seconds=max(0.0, time.time() - worker.created_at),
             ))
     except Exception:
-        log.exception("copse: the learning plugin failed to record an outcome")
+        log.exception("copse: the learner failed to record an outcome")
+
+
+def choose_why(db: DB, cfg: RepoConfig, repo_root: str, task: str | None = None,
+               files: list[str] | None = None, candidates: list[str] | None = None,
+               weight: str | None = None,
+               default: str | None = None) -> tuple[str | None, str | None]:
+    """(override, reason): the learner's pick among ``candidates`` (default:
+    the repo's ``learning_candidates``) when it overrides ``default`` (what
+    copse would use: the first candidate unless given), else (None, None).
+    The learner is not asked with fewer than two candidates."""
+    names = [c for c in (candidates if candidates is not None else cfg.learning_candidates)
+             if isinstance(c, str)]
+    if not names:
+        return None, None
+    default = default or names[0]
+    if default not in names:
+        names.insert(0, default)
+    if len(names) < 2:
+        return None, None
+    try:
+        p = plugin(cfg, repo_root)
+        if p is None:
+            return None, None
+        p.last_reason = None
+        pick = p.suggest(TaskInfo(repo_root=repo_root, task=task or "",
+                                  files=tuple(files or ()), weight=weight), names, default)
+        if pick not in names or pick == default:
+            return None, None
+        return pick, p.last_reason
+    except Exception:
+        log.exception("copse: the learner failed to suggest a profile")
+        return None, None
 
 
 def choose(db: DB, cfg: RepoConfig, repo_root: str, task: str | None = None,
            files: list[str] | None = None, candidates: list[str] | None = None,
-           weight: str | None = None) -> str | None:
-    """The plugin's pick among ``candidates`` (default: the repo's
-    ``learning_candidates``), or None without a plugin or candidates."""
-    names = [c for c in (candidates if candidates is not None else cfg.learning_candidates)
-             if isinstance(c, str)]
-    if not names:
-        return None
-    try:
-        p = plugin(cfg, repo_root)
-        if p is None:
-            return None
-        pick = p.suggest(TaskInfo(repo_root=repo_root, task=task or "",
-                                  files=tuple(files or ()), weight=weight), names)
-        return pick if pick in names else None
-    except Exception:
-        log.exception("copse: the learning plugin failed to suggest a profile")
-        return None
+           weight: str | None = None, default: str | None = None) -> str | None:
+    """The learner's override of ``default`` among ``candidates``, or None
+    (no learner, nothing to choose between, or it kept the default)."""
+    return choose_why(db, cfg, repo_root, task, files, candidates, weight, default)[0]
 
 
-__all__ = ["LearningPlugin", "Outcome", "TaskInfo", "choose", "note", "plugin", "reset"]
+__all__ = ["LearningPlugin", "Outcome", "TaskInfo", "choose", "choose_why", "note", "plugin", "reset"]

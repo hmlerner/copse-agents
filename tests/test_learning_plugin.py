@@ -21,10 +21,11 @@ class Recorder(learning.LearningPlugin):
             raise RuntimeError("boom")
         self.events.append((task, outcome))
 
-    def suggest(self, task, candidates):
+    def suggest(self, task, candidates, default=None):
         if self.fail:
             raise RuntimeError("boom")
-        self.asked.append((task, candidates))
+        self.asked.append((task, candidates, default))
+        self.last_reason = "cheaper and as good" if self.pick != default else None
         return self.pick
 
 
@@ -102,9 +103,42 @@ def test_explicit_candidates_and_weight_are_passed(db, ws, monkeypatch):
     p = Recorder(pick="developer-heavy")
     install(monkeypatch, p)
     cfg = RepoConfig(learning="cloud")
-    assert learning.choose(db, cfg, ws.repo_root, "t", candidates=["developer-heavy"],
+    assert learning.choose(db, cfg, ws.repo_root, "t", candidates=["developer", "developer-heavy"],
                            weight="heavy") == "developer-heavy"
-    assert p.asked[0][0].weight == "heavy" and p.asked[0][1] == ["developer-heavy"]
+    assert p.asked[0][0].weight == "heavy" and p.asked[0][1] == ["developer", "developer-heavy"]
+    assert p.asked[0][2] == "developer"
+
+
+def test_a_single_candidate_never_asks_the_learner(db, ws, monkeypatch):
+    p = Recorder(pick="developer")
+    install(monkeypatch, p)
+    cfg = RepoConfig(learning="cloud")
+    assert learning.choose(db, cfg, ws.repo_root, "t", candidates=["developer"]) is None
+    assert p.asked == []
+
+
+def test_keeping_the_default_is_not_an_override(db, ws, monkeypatch):
+    p = Recorder(pick="developer")
+    install(monkeypatch, p)
+    cfg = RepoConfig(learning="cloud")
+    assert learning.choose_why(db, cfg, ws.repo_root, "t",
+                               candidates=["developer", "developer-local"]) == (None, None)
+    assert p.asked
+
+
+def test_an_override_carries_its_reason(db, ws, monkeypatch):
+    install(monkeypatch, Recorder(pick="developer-local"))
+    cfg = RepoConfig(learning="cloud")
+    assert learning.choose_why(db, cfg, ws.repo_root, "t", candidates=["developer", "developer-local"],
+                               default="developer") == ("developer-local", "cheaper and as good")
+
+
+def test_the_default_joins_the_candidates(db, ws, monkeypatch):
+    p = Recorder(pick="developer-local")
+    install(monkeypatch, p)
+    cfg = RepoConfig(learning="cloud")
+    learning.choose(db, cfg, ws.repo_root, "t", candidates=["developer-local"], default="developer")
+    assert p.asked[0][1] == ["developer", "developer-local"] and p.asked[0][2] == "developer"
 
 
 def test_a_failing_learner_never_raises(db, ws, monkeypatch):

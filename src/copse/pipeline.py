@@ -91,7 +91,7 @@ def note_removed_unmerged(db: DB, ws: Workspace, actor: Agent | None = None) -> 
 def note_removed_merged(db: DB, ws: Workspace, actor: Agent | None = None,
                         worker: Agent | None = None) -> None:
     """A worktree whose branch had merged is being removed: an event only
-    (the learning plugin heard about the merge). Pass ``worker`` when the
+    (the learner heard about the merge). Pass ``worker`` when the
     workspace's records are already gone."""
     try:
         cfg = load_repo_config(ws.repo_root)
