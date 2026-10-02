@@ -350,9 +350,8 @@ def fresh_plugins():
     plugins.reset()
 
 
-def test_cloud_entry_point_loads_through_copse():
-    assert [e.value for e in entry_points(group="copse.learning") if e.name == "cloud"] == \
-        ["copse.pro.learning:make"]
+def test_cloud_learner_is_built_in_not_an_entry_point():
+    assert list(entry_points(group="copse.learning")) == []
     p = copse_learning.plugin(RepoConfig(learning="cloud"), REPO)
     assert isinstance(p, CloudLearner)
 
@@ -374,7 +373,8 @@ def test_learning_defaults_to_auto_which_is_off_until_entitled(remote, tmp_path)
     p = copse_learning.plugin(cfg, str(tmp_path))
     assert isinstance(p, CloudLearner)
     assert copse_learning.plugin(RepoConfig(learning="off"), str(tmp_path)) is None
-    assert plugins.learning_name(RepoConfig(learning="other")) == "other"
+    assert plugins.learning_name(RepoConfig(learning="other")) == "off"
+    assert copse_learning.plugin(RepoConfig(learning="other"), str(tmp_path)) is None
 
 
 def test_copse_learning_command_explains_auto(repo, monkeypatch):
@@ -386,6 +386,19 @@ def test_copse_learning_command_explains_auto(repo, monkeypatch):
     res = CliRunner().invoke(app, ["learning"])
     assert res.exit_code == 0, res.output
     assert "copse Pro" in res.output and "copse account upgrade" in res.output
+
+
+def test_copse_learning_command_rejects_unsupported_value(repo, monkeypatch):
+    from typer.testing import CliRunner
+
+    from copse.cli import app
+
+    (repo / ".copse").mkdir(exist_ok=True)
+    (repo / ".copse" / "config.json").write_text('{"learning": "myplugin"}')
+    monkeypatch.chdir(repo)
+    res = CliRunner().invoke(app, ["learning"])
+    assert res.exit_code == 0, res.output
+    assert "not a supported value" in res.output
 
 
 def test_account_status_shows_cloud_learning(parts, remote):

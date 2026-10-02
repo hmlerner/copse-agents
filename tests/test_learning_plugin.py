@@ -1,5 +1,6 @@
-"""copse's learning plugin interface: outcomes go to an installed plugin,
-suggestions come back, and nothing breaks when there is none."""
+"""copse's learning is hosted only: outcomes go to the built-in cloud learner,
+suggestions come back, nothing breaks when there is none, and an installed
+``copse.learning`` entry point is never loaded."""
 
 import time
 
@@ -8,6 +9,7 @@ import pytest
 from copse import autopilot, learning, plugins, workspaces
 from copse.config import RepoConfig
 from copse.db import Agent
+from copse.pro import learning as pro_learning
 
 
 class Recorder(learning.LearningPlugin):
@@ -38,38 +40,43 @@ def clear_cache():
     plugins.reset()
 
 
-def install(monkeypatch, plugin, name="test"):
-    class EP:
-        def __init__(self):
-            self.name = name
-
-        def load(self):
-            return lambda repo_root: plugin
-
-    monkeypatch.setattr(plugins, "entry_points", lambda group: [EP()] if group == learning.GROUP else [])
+def install(monkeypatch, plugin):
+    """Stand in for the hosted learner (what ``learning: cloud`` builds)."""
+    monkeypatch.setattr(pro_learning, "CloudLearner", lambda repo_root: plugin)
 
 
 def worker(db, ws, task="fix the crash in parser.py"):
+    existing = db.get_agent("w1")
+    if existing:
+        return existing
     a = Agent("w1", ws.id, "developer", "claude", None, "assign", "processing", "", None,
               time.time() - 5, task=task)
     db.add_agent(a)
     return a
 
 
-def test_off_by_default_loads_nothing(db, ws, monkeypatch):
+def test_off_loads_nothing(db, ws, monkeypatch):
     p = Recorder(pick="developer")
     install(monkeypatch, p)
-    cfg = RepoConfig(learning_candidates=["developer"])
-    assert learning.plugin(cfg, ws.repo_root) is None
-    assert learning.choose(db, cfg, ws.repo_root, "task") is None
-    learning.note(db, cfg, worker(db, ws), ws, merged=True)
+    monkeypatch.setattr(plugins, "auto_learning", lambda: plugins.OFF)
+    for value in ("off", "auto"):
+        cfg = RepoConfig(learning=value, learning_candidates=["developer"])
+        assert learning.plugin(cfg, ws.repo_root) is None
+        assert learning.choose(db, cfg, ws.repo_root, "task") is None
+        learning.note(db, cfg, worker(db, ws), ws, merged=True)
     assert p.events == [] and p.asked == []
 
 
-def test_outcomes_reach_the_selected_plugin(db, ws, monkeypatch):
+def test_cloud_is_built_in(ws):
+    p = learning.plugin(RepoConfig(learning="cloud"), ws.repo_root)
+    assert isinstance(p, pro_learning.CloudLearner)
+    assert learning.plugin(RepoConfig(learning="cloud"), ws.repo_root) is p
+
+
+def test_outcomes_reach_the_cloud_learner(db, ws, monkeypatch):
     p = Recorder()
     install(monkeypatch, p)
-    cfg = RepoConfig(learning="test")
+    cfg = RepoConfig(learning="cloud")
     w = worker(db, ws)
     learning.note(db, cfg, w, ws, approved=False)
     learning.note(db, cfg, w, ws, escalated=True)
@@ -83,7 +90,7 @@ def test_outcomes_reach_the_selected_plugin(db, ws, monkeypatch):
 
 
 def test_suggestion_must_be_a_candidate(db, ws, monkeypatch):
-    cfg = RepoConfig(learning="test", learning_candidates=["developer", "developer-local"])
+    cfg = RepoConfig(learning="cloud", learning_candidates=["developer", "developer-local"])
     install(monkeypatch, Recorder(pick="developer-local"))
     assert learning.choose(db, cfg, ws.repo_root, "add docs", ["README.md"]) == "developer-local"
     plugins.reset()
@@ -94,27 +101,52 @@ def test_suggestion_must_be_a_candidate(db, ws, monkeypatch):
 def test_explicit_candidates_and_weight_are_passed(db, ws, monkeypatch):
     p = Recorder(pick="developer-heavy")
     install(monkeypatch, p)
-    cfg = RepoConfig(learning="test")
+    cfg = RepoConfig(learning="cloud")
     assert learning.choose(db, cfg, ws.repo_root, "t", candidates=["developer-heavy"],
                            weight="heavy") == "developer-heavy"
     assert p.asked[0][0].weight == "heavy" and p.asked[0][1] == ["developer-heavy"]
 
 
-def test_a_failing_or_missing_plugin_never_raises(db, ws, monkeypatch):
+def test_a_failing_learner_never_raises(db, ws, monkeypatch):
     install(monkeypatch, Recorder(pick="developer", fail=True))
-    cfg = RepoConfig(learning="test", learning_candidates=["developer"])
+    cfg = RepoConfig(learning="cloud", learning_candidates=["developer"])
     learning.note(db, cfg, worker(db, ws), ws, merged=True)
     assert learning.choose(db, cfg, ws.repo_root, "t") is None
-    missing = RepoConfig(learning="not-installed", learning_candidates=["developer"])
-    assert learning.plugin(missing, ws.repo_root) is None
-    assert learning.choose(db, missing, ws.repo_root, "t") is None
+
+
+def test_an_installed_learning_entry_point_is_never_used(db, ws, monkeypatch):
+    calls = []
+
+    class EP:
+        def __init__(self, name):
+            self.name = name
+
+        def load(self):
+            calls.append(("load", self.name))
+            return lambda repo_root: Recorder(pick="developer")
+
+    monkeypatch.setattr(plugins, "entry_points",
+                        lambda group: [EP("test"), EP("cloud")] if group == "copse.learning" else [])
+    monkeypatch.setattr(plugins, "auto_learning", lambda: plugins.OFF)
+    for value in ("test", "auto", "off", "cloud"):
+        cfg = RepoConfig(learning=value, learning_candidates=["developer"])
+        learning.plugin(cfg, ws.repo_root)
+        learning.choose(db, cfg, ws.repo_root, "t")
+        learning.note(db, cfg, worker(db, ws), ws, merged=True)
+    assert calls == []
+    assert plugins.learning_name(RepoConfig(learning="test")) == "off"
+    assert "copse.learning" not in plugins.GROUPS
+
+
+def test_unsupported_value_means_off(ws):
+    assert learning.plugin(RepoConfig(learning="something"), ws.repo_root) is None
 
 
 def test_resolve_profile_precedence(db, ws, monkeypatch):
     install(monkeypatch, Recorder(pick="developer-local"))
     (__import__("pathlib").Path(ws.repo_root) / ".copse").mkdir(exist_ok=True)
     (__import__("pathlib").Path(ws.repo_root) / ".copse" / "config.json").write_text(
-        '{"learning": "test", "learning_candidates": ["developer-local"], "default_agent": "developer"}')
+        '{"learning": "cloud", "learning_candidates": ["developer-local"], "default_agent": "developer"}')
     boss = Agent("boss", ws.id, "supervisor", "claude", None, "interactive", "processing", "", None,
                  time.time())
     db.add_agent(boss)

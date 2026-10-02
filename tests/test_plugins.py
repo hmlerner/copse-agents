@@ -129,14 +129,10 @@ def test_nothing_installed_selects_nothing(repo, monkeypatch):
     assert account.plugin(cfg, str(repo)) is None
 
 
-def test_exactly_one_installed_is_the_default_but_learning_stays_opt_in(repo, monkeypatch):
+def test_exactly_one_installed_is_the_default(repo, monkeypatch):
     rec = Recorder()
-    install(monkeypatch, {plugins.EVENTS: [("pro", lambda r: rec)],
-                          plugins.LEARNING: [("pro", lambda r: object())]})
-    cfg = RepoConfig()
-    assert plugins.select(plugins.EVENTS, cfg, str(repo)) is rec
-    assert plugins.select(plugins.LEARNING, cfg, str(repo)) is None
-    assert plugins.select(plugins.LEARNING, RepoConfig(learning="pro"), str(repo)) is not None
+    install(monkeypatch, {plugins.EVENTS: [("pro", lambda r: rec)]})
+    assert plugins.select(plugins.EVENTS, RepoConfig(), str(repo)) is rec
 
 
 def test_several_installed_need_the_config_to_choose(repo, monkeypatch):

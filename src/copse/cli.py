@@ -807,9 +807,9 @@ def history(
 
 @app.command()
 def learning(
-    reset: bool = typer.Option(False, "--reset", help="Ask the plugin to forget this repo."),
+    reset: bool = typer.Option(False, "--reset", help="Ask the hosted learner to forget this repo."),
 ) -> None:
-    """What the repo's learning plugin has learned about which profiles fit which tasks."""
+    """What copse Pro's hosted learner has learned about which profiles fit which tasks (nothing is learned on this machine)."""
     from copse import learning as learning_mod
     from copse.config import load_repo_config
 
@@ -823,18 +823,21 @@ def learning(
 
     name = plugins.learning_name(cfg)
     if name == plugins.OFF:
-        found = learning_mod.installed()
-        if cfg.learning == plugins.AUTO:
+        configured = (cfg.learning or plugins.OFF).strip()
+        if configured == plugins.AUTO:
             typer.echo("learning is off: hosted learning needs copse Pro "
-                       "(`copse account` shows your plan; `copse account upgrade` gets it). Or set \"learning\" in .copse/config.json to an "
-                       "installed plugin's name" + (f" ({', '.join(found)})." if found else "."))
+                       "(`copse account` shows your plan; `copse account upgrade` gets it). "
+                       "Nothing is learned on this machine.")
+        elif configured == plugins.OFF:
+            typer.echo('learning is off. Set "learning" to "auto" or "cloud" in .copse/config.json '
+                       "to use hosted learning (copse Pro).")
         else:
-            typer.echo('learning is off. Set "learning" in .copse/config.json to a plugin\'s name'
-                       + (f" (installed: {', '.join(found)})." if found else "; no learning plugin is installed."))
+            typer.echo(f'learning is off: "learning": {configured!r} is not a supported value '
+                       '(use "auto", "cloud" or "off"). Learning is hosted only (copse Pro).')
         return
     p = learning_mod.plugin(cfg, repo_root)
     if p is None:
-        typer.echo(f"no learning plugin named {name!r} is installed")
+        typer.echo("hosted learning is unavailable")
         raise typer.Exit(1)
     typer.echo(p.report(reset=reset))
 

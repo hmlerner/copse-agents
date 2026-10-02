@@ -96,7 +96,7 @@ class RepoConfig:
     delete_merged_branches: bool = True  # removing a worktree deletes its branch once fully merged into its base
     pr_footer: bool = True             # `copse pr` / `copse ci` end the PR body with one "built with copse" line
     sidebar: str = "left"              # where the dashboard sits: "left" of the chat or "bottom"
-    learning: str = "auto"             # "auto" (copse Pro's cloud learner when entitled, else off), "off", or an installed learning plugin's name (see copse.learning)
+    learning: str = "auto"             # "auto" (copse Pro's cloud learner when entitled, else off), "cloud" or "off"; hosted only, anything else is off (see copse.learning)
     learning_candidates: list[str] = field(default_factory=list)  # profiles the learner may pick from
     # Which installed plugin to use per group ("events", "policy", "account"), or "off";
     # unset: the only one installed, if exactly one (see copse.plugins).

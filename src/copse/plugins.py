@@ -3,9 +3,6 @@
 copse itself is complete without any plugin. A plugin is a Python package
 that registers an entry point in one of these groups:
 
-``copse.learning``
-    records how worker tasks turn out and suggests profiles
-    (``copse.learning.LearningPlugin``)
 ``copse.events``
     is told what happens (a task started, a review verdict, a merge, a
     worktree removed) (``copse.events.EventsPlugin``)
@@ -19,11 +16,13 @@ The entry point's object is a factory ``make(repo_root: str) -> plugin | None``,
 called once per repo per process (the result is cached). Install a plugin
 next to copse, e.g. ``uv tool install copse-agents --with <plugin>``.
 
-Selection. The learning group follows the repo config's ``learning`` key:
-a plugin's name selects it, ``"off"`` loads nothing, and the default
-``"auto"`` uses copse Pro's ``cloud`` learner when the verified entitlement
-includes the ``learning`` feature and otherwise behaves as ``"off"``. The
-other groups select themselves: when exactly one plugin is installed in the
+Learning is not a plugin group: it is reachable only through the hosted
+copse Pro API, and no installed package can act as a learner. The repo
+config's ``learning`` key is ``"auto"`` (the default: ``"cloud"`` when the
+verified entitlement includes the ``learning`` feature, else ``"off"``),
+``"cloud"`` or ``"off"``; anything else means ``"off"`` (``learning_name``).
+
+Selection. The groups select themselves: when exactly one plugin is installed in the
 group it is used, so installing one package is all a repo needs. With
 several installed, or to turn one off, the repo config's ``plugins`` object
 names the one to use per group: ``"plugins": {"events": "<name>", "policy":
@@ -47,11 +46,10 @@ from copse.config import RepoConfig
 
 log = logging.getLogger(__name__)
 
-LEARNING = "copse.learning"
 EVENTS = "copse.events"
 POLICY = "copse.policy"
 ACCOUNT = "copse.account"
-GROUPS = (LEARNING, EVENTS, POLICY, ACCOUNT)
+GROUPS = (EVENTS, POLICY, ACCOUNT)
 
 OFF = "off"
 AUTO = "auto"                  # learning: "cloud" when entitled, else off
@@ -111,16 +109,17 @@ def auto_learning() -> str:
 
 
 def learning_name(cfg: RepoConfig) -> str:
-    """The learning plugin ``cfg`` selects, with ``"auto"`` resolved."""
+    """The learning mode ``cfg`` selects, with ``"auto"`` resolved: ``"cloud"``
+    or ``"off"`` (any other configured value is off)."""
     name = (cfg.learning or OFF).strip()
-    return auto_learning() if name == AUTO else name
+    if name == AUTO:
+        return auto_learning()
+    return name if name == CLOUD else OFF
 
 
 def select(group: str, cfg: RepoConfig, repo_root: str) -> object | None:
     """The plugin the repo uses for ``group`` (see the module docstring for
     how one is chosen), or None."""
-    if group == LEARNING:
-        return load(group, learning_name(cfg), repo_root)
     configured = cfg.plugins.get(short(group)) if isinstance(cfg.plugins, dict) else None
     if isinstance(configured, str) and configured.strip():
         return load(group, configured, repo_root)
@@ -160,8 +159,11 @@ def reset() -> None:
     """Forget every loaded plugin and choice (the next call loads again)."""
     _loaded.clear()
     _chosen.clear()
+    from copse import learning
+
+    learning.reset()
 
 
-__all__ = ["ACCOUNT", "AUTO", "CLOUD", "EVENTS", "GROUPS", "LEARNING", "OFF", "POLICY",
+__all__ = ["ACCOUNT", "AUTO", "CLOUD", "EVENTS", "GROUPS", "OFF", "POLICY",
            "auto_learning", "installed", "learning_name", "load", "reset", "select",
            "select_all", "short"]
