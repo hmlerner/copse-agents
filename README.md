@@ -15,6 +15,10 @@ curl -fsSL pawdelta.com/copse/install | sh
 copse demo        # watch it finish a practice repo in a few minutes
 ```
 
+![copse demo: a supervisor splits a goal between two workers, each branch is reviewed and merged, and both milestones turn green once their checks pass](https://raw.githubusercontent.com/hmlerner/copse-agents/main/assets/copse-demo.gif)
+
+*`copse demo`, recorded on copse 0.14.6 (sped up 4×): two workers in parallel, each branch reviewed and merged, both milestones verified by their check commands.*
+
 - **Done means a command passed.** A goal is split into milestones, each with a
   check command that copse runs itself. A milestone is verified when its check exits
   0, re-run after later merges to catch regressions, never when a model says so.
