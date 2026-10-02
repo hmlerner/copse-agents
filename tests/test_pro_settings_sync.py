@@ -87,6 +87,14 @@ def test_local_change_since_last_sync_is_pushed_not_overwritten(backend, store):
     assert read_cfg() == {"delegation": "conservative"}
 
 
+def test_push_from_a_fresh_machine_keeps_the_servers_other_keys(backend, store):
+    backend.settings, backend.settings_at = {"sidebar": "bottom"}, time.time()
+    write_cfg(delegation="fast")
+    settings_sync.push(client(backend), store)
+    assert backend.settings == {"sidebar": "bottom", "delegation": "fast"}
+    assert read_cfg() == {"sidebar": "bottom", "delegation": "fast"}
+
+
 def test_state_file_is_private(backend, store, copse_home):
     write_cfg(delegation="fast")
     settings_sync.push(client(backend), store)

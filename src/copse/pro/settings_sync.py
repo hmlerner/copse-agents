@@ -8,7 +8,10 @@
   server's ``updated_at`` and the synced values as of the last sync. If the
   local values differ from that snapshot, they were changed since: they are
   pushed. Otherwise a newer server copy is written into the config file
-  (other keys are kept).
+  (other keys are kept). On a machine's first sync (no snapshot) the account's
+  values win over differing local ones; keys only this machine has are pushed.
+  PUT replaces the server's whole map, so a push first reads the server and
+  keeps its keys this machine lacks.
 * Needs the ``settings_sync`` feature in the verified entitlement (checked
   offline), and never runs in air-gap mode. Offline, unentitled or on any
   error nothing happens and nothing raises: a later sync catches up.
@@ -167,9 +170,16 @@ def push(client=None, store=None) -> Result:
         from copse.pro import auth
 
         local = _subset(config.user_settings())
-        got, stamp = _call(client, store, "PUT", auth.JSONBody({"settings": local}))
-        _save_state(stamp, local)
-        return Result("pushed")
+        server, _ = _call(client, store, "GET")
+        body = {**server, **local}               # PUT replaces: keep the other machines' keys
+        _, stamp = _call(client, store, "PUT", auth.JSONBody({"settings": body}))
+        extra = {k: v for k, v in body.items() if k not in local}
+        if extra:
+            path = config.user_config_path()
+            merged = {**config._read_json(path), **extra}
+            path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+        _save_state(stamp, body)
+        return Result("pushed", {k: (None, v) for k, v in extra.items()})
     except Exception as e:  # noqa: BLE001
         log.info("settings push skipped (%s)", e)
         return Result("skipped", reason=str(e) or type(e).__name__)
@@ -177,7 +187,9 @@ def push(client=None, store=None) -> Result:
 
 def push_soon(timeout: float = TIMEOUT) -> None:
     """Push in the background and wait at most ``timeout`` seconds for it
-    (a slow network never holds the caller). Never raises."""
+    (a slow network never holds the caller). Never raises. The thread dies
+    with the process, so a push cut off here is retried by the next start's
+    pull (the local values then differ from the snapshot)."""
     try:
         if not entitled():
             return
