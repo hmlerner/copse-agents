@@ -278,8 +278,9 @@ def _pause_when_done(agent_id: str, argv: list[str]) -> list[str]:
 
 
 def _profile_for(db: DB, agent: Agent, ws: Workspace):
-    """``agent``'s profile as launched: autopilot sessions add their guide,
-    and a chat (a supervisor) learns about the code map, if there is one.
+    """``agent``'s profile as launched: autopilot sessions add their guide, a
+    supervisor gets the repo's delegation rule, and a chat (a supervisor)
+    learns about the code map, if there is one.
     Workers get the code map in their task instead (see worker_guidance)."""
     from dataclasses import replace
 
@@ -287,8 +288,12 @@ def _profile_for(db: DB, agent: Agent, ws: Workspace):
     from copse.config import load_repo_config
 
     profile = load_profile(agent.profile, ws.repo_root)
-    if db.get_autopilot(agent.id):
-        profile = replace(profile, prompt=profile.prompt + pilot.guide(load_repo_config(ws.repo_root), ws.repo_root))
+    cfg = load_repo_config(ws.repo_root)
+    autopilot_on = db.get_autopilot(agent.id) is not None
+    if autopilot_on:
+        profile = replace(profile, prompt=profile.prompt + pilot.guide(cfg, ws.repo_root))
+    if agent.mode == "interactive" and (autopilot_on or agent.profile == "supervisor"):
+        profile = replace(profile, prompt=f"{profile.prompt}\n\n{pilot.delegation_rule(cfg)}".strip())
     if agent.mode == "interactive":
         from copse import codemap
 
@@ -320,6 +325,23 @@ def _open_window(db: DB, agent: Agent, ws: Workspace, name: str, argv: list[str]
             pass
     tmux.apply_theme(ws.tmux_session)
     return target
+
+
+def _note_sidebar_move(why: str, pane: str, target_pane: str) -> None:
+    """One line per sidebar move in ~/.copse/sidebar.log (kept short), so a
+    sidebar that ends up somewhere odd can be traced to what moved it."""
+    try:
+        from copse.config import copse_home
+
+        src, dst = tmux.pane_session(pane), tmux.pane_session(target_pane)
+        line = (f"{time.strftime('%Y-%m-%d %H:%M:%S')} {why}: {src} -> {dst} "
+                f"(attached: {src}={tmux.session_attached(src or '')}, "
+                f"{dst}={tmux.session_attached(dst or '')})\n")
+        path = copse_home() / "sidebar.log"
+        lines = path.read_text().splitlines(keepends=True)[-199:] if path.exists() else []
+        path.write_text("".join(lines) + line)
+    except Exception:  # noqa: BLE001 - a diagnostic must never break a move
+        pass
 
 
 SIDEBAR_COLUMNS = 30
@@ -422,6 +444,7 @@ def _ensure_sidebar(db: DB, root_id: str, ws: Workspace, target_pane: str) -> No
         if _valid_sidebar(existing, root_id):
             assert existing is not None
             if tmux.pane_window(existing) != tmux.pane_window(target_pane):
+                _note_sidebar_move("launch", existing, target_pane)
                 tmux.move_pane(existing, target_pane, SIDEBAR_COLUMNS, _sidebar_position(ws))
             return
         _create_sidebar(db, root_id, ws, target_pane)
@@ -478,6 +501,39 @@ def dismiss_sidebar(db: DB, pane: str | None) -> None:
     with _sidebar_lock(root_id):
         if db.get_sidebar_pane(root_id) == pane:
             db.set_sidebar_pane(root_id, SIDEBAR_DISMISSED)
+
+
+def sidebar_come_home(db: DB, root_id: str, pane: str | None) -> bool:
+    """The sidebar's own safety net for the follow hooks, run from its
+    refresh loop: if it sits in a session nobody is attached to (it followed
+    the person into a worker's session and a hook was missed on the way
+    back, or failed, since hooks fail silently) while the person is attached
+    to its root's session or one of its workers', move it there. True when
+    it moved."""
+    if not pane:
+        return False
+    here = tmux.pane_session(pane)
+    if not here or tmux.session_attached(here):
+        return False
+    root = db.get_agent(root_id)
+    if root is None or root.status == "paused":
+        return False
+    sessions = []
+    root_ws = db.get_workspace(root.workspace_id)
+    if root_ws:
+        sessions.append(root_ws.tmux_session)
+    for a in db.list_agents():
+        if a.id == root_id or root_of(db, a.id) != root_id:
+            continue
+        ws = db.get_workspace(a.workspace_id)
+        if ws and ws.tmux_session not in sessions:
+            sessions.append(ws.tmux_session)
+    for name in sessions:
+        if name != here and tmux.session_attached(name):
+            _note_sidebar_move(f"come home from {here}", pane, pane)
+            sidebar_follow(db, name)
+            return tmux.pane_session(pane) == name
+    return False
 
 
 def sidebar_follow(db: DB, session: str) -> None:
@@ -542,6 +598,7 @@ def sidebar_follow(db: DB, session: str) -> None:
         if not target_pane:
             return
         root_ws = db.get_workspace(root.workspace_id)
+        _note_sidebar_move(f"follow {session}", sidebar, target_pane)
         tmux.move_pane(sidebar, target_pane, SIDEBAR_COLUMNS,
                        _sidebar_position(root_ws) if root_ws else "left")
 
@@ -1789,6 +1846,58 @@ def pre_tool_decision(db: DB, agent: Agent, payload: dict) -> dict | None:
     }}
 
 
+def _stop_decision(db: DB, agent: Agent, payload: dict, via_inbox: bool = False) -> dict | None:
+    """What the Stop hook decides: a "block" with the reason to carry on, or
+    None to let the agent stop. ``via_inbox``: the reason will be sent as an
+    inbox message rather than block the stop, so ``stop_hook_active`` never
+    caps a repeat; the unread-mail reminder is then limited like a notice."""
+    msg = db.pop_pending(agent.id)
+    if msg:
+        db.set_status(agent.id, "processing")
+        return {"decision": "block", "reason": msg.body}
+    if agent.mode == "interactive" and db.unread_count(agent.id):
+        ap = db.get_autopilot(agent.id)
+        if (ap is not None and ap.enabled and not payload.get("stop_hook_active")
+                and (not via_inbox or db.claim_notice(agent.id))):
+            # An autopilot supervisor doesn't stop with mail it hasn't read.
+            db.set_status(agent.id, "processing")
+            return {"decision": "block", "reason": (
+                "[copse autopilot] You have unread messages. Call read_messages "
+                "before you stop.")}
+        claimed = None if payload.get("stop_hook_active") else db.claim_notice(agent.id)
+        if claimed:  # the notice never went out (or was lost): hand it over now
+            db.set_status(agent.id, "processing")
+            return {"decision": "block", "reason": unread_notice(db, claimed)}
+    needs_report = agent.mode in REPORTING_MODES and agent.result is None
+    if needs_report and not payload.get("stop_hook_active"):
+        db.set_status(agent.id, "processing")
+        if agent.mode == "review":
+            return {
+                "decision": "block",
+                "reason": "You haven't called the copse `submit_review` tool yet. "
+                "Call it now with your verdict and findings.",
+            }
+        return {
+            "decision": "block",
+            "reason": "You haven't called the copse `report_result` tool yet. "
+            "If your task is finished, commit your work and call it now. "
+            "If you are blocked, call it with a description of what's blocking you.",
+        }
+    if needs_report:
+        db.set_status(agent.id, "idle")
+        tell_parent_unreported(db, agent)
+        return None
+    if agent.mode == "interactive":
+        from copse import autopilot as pilot
+
+        decision = pilot.on_stop(db, agent, payload)
+        if decision:
+            db.set_status(agent.id, "processing")
+            return decision
+    db.set_status(agent.id, "idle")
+    return None
+
+
 def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None:
     """Called from ``copse _hook <event>`` inside the agent's own process tree.
     Returns JSON for Claude Code to read on stdout, or None."""
@@ -1837,53 +1946,28 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
         if "permission" in text or "approval" in text:
             db.set_status(agent_id, "waiting")
     elif event == "pre-tool":
+        # A tool call means a turn is running. The hooks can miss its start:
+        # a turn that a finished background task or a queued message begins
+        # runs no UserPromptSubmit after the last Stop set 'idle', and the
+        # dashboard's one-sample screen read never overrides 'idle'.
+        db.set_status(agent_id, "processing", only_if="idle")
         return pre_tool_decision(db, agent, payload)
     elif event == "tool-done":
         db.set_status(agent_id, "processing", only_if="waiting")
+        db.set_status(agent_id, "processing", only_if="idle")  # see "pre-tool"
     elif event == "stop":
-        msg = db.pop_pending(agent_id)
-        if msg:
-            db.set_status(agent_id, "processing")
-            return {"decision": "block", "reason": msg.body}
-        if agent.mode == "interactive" and db.unread_count(agent_id):
-            ap = db.get_autopilot(agent_id)
-            if ap is not None and ap.enabled and not payload.get("stop_hook_active"):
-                # An autopilot supervisor doesn't stop with mail it hasn't read.
-                db.set_status(agent_id, "processing")
-                return {"decision": "block", "reason": (
-                    "[copse autopilot] You have unread messages. Call read_messages "
-                    "before you stop.")}
-            claimed = None if payload.get("stop_hook_active") else db.claim_notice(agent_id)
-            if claimed:  # the notice never went out (or was lost): hand it over now
-                db.set_status(agent_id, "processing")
-                return {"decision": "block", "reason": unread_notice(db, claimed)}
-        needs_report = agent.mode in REPORTING_MODES and agent.result is None
-        if needs_report and not payload.get("stop_hook_active"):
-            db.set_status(agent_id, "processing")
-            if agent.mode == "review":
-                return {
-                    "decision": "block",
-                    "reason": "You haven't called the copse `submit_review` tool yet. "
-                    "Call it now with your verdict and findings.",
-                }
-            return {
-                "decision": "block",
-                "reason": "You haven't called the copse `report_result` tool yet. "
-                "If your task is finished, commit your work and call it now. "
-                "If you are blocked, call it with a description of what's blocking you.",
-            }
-        if needs_report:
-            db.set_status(agent_id, "idle")
-            tell_parent_unreported(db, agent)
-            return None
-        if agent.mode == "interactive":
-            from copse import autopilot as pilot
+        from copse import inbox
 
-            decision = pilot.on_stop(db, agent, payload)
-            if decision:
-                db.set_status(agent_id, "processing")
-                return decision
-        db.set_status(agent_id, "idle")
+        # Claude Code shows any blocked stop as "Stop hook error" in the chat.
+        # Where a person watches (an interactive agent with an inbox), copse
+        # lets the stop happen and sends the same text through the inbox
+        # instead: it arrives as a message from copse and starts the next turn.
+        if agent.mode == "interactive" and inbox.usable(agent):
+            decision = _stop_decision(db, agent, payload, via_inbox=True)
+            if decision and inbox.send(agent, decision["reason"]):
+                return None
+            return decision  # nothing to say, or the inbox failed: block after all
+        return _stop_decision(db, agent, payload)
     elif event == "codex-notify":
         # Codex's notify command runs when a turn completes; it can't block the
         # stop, so a queued message is typed into the pane instead.

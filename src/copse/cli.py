@@ -258,6 +258,7 @@ def start(
     _cull_detached(ws.repo_root)
     typer.echo(f"✓ {a.profile} agent {a.id} in {ws.id} ({ws.branch})")
     _local_models_detached(ws.repo_root)
+    _settings_sync_detached()
     if autopilot:
         _say_autopilot(db, a.id)
     if attach:
@@ -294,6 +295,15 @@ def _local_models_detached(repo_root: str) -> None:
     who = ", ".join(sorted({n for s in pending for n in s.profiles}))
     typer.echo(f"  local models: starting ollama in the background for {who} (log: {serve.log_path()})")
     subprocess.Popen([*copse_invocation(), "_local-models", "--repo", repo_root], start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _settings_sync_detached() -> None:
+    """Pull this person's synced settings (copse Pro) without making them
+    wait; the helper does nothing unless the plan includes settings sync."""
+    from copse.providers import copse_invocation
+
+    subprocess.Popen([*copse_invocation(), "_sync-settings"], start_new_session=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -606,6 +616,60 @@ def _session_root(db: DB) -> str:
     raise AssertionError
 
 
+@app.command("delegation")
+def delegation_cmd(
+    level: Optional[str] = typer.Argument(None, help="conservative, balanced or fast. Omit to show the current one."),
+    repo: bool = typer.Option(False, "--repo", help="Only for this repo (.copse/config.local.json), not every repo."),
+) -> None:
+    """How readily the supervisor hands work to workers: conservative, balanced (default) or fast.
+
+    conservative does most work in its own chat (fewest tokens); fast splits
+    work across parallel workers straight away (quickest, most tokens). It's
+    saved in ~/.copse/config.json for every repo and session (with --repo,
+    for this repo only), and a running supervisor is told at once."""
+    from copse import autopilot as pilot
+    from copse.config import RepoConfig, load_repo_config, set_local, set_user, user_settings
+
+    try:
+        root = git.out(["rev-parse", "--show-toplevel"], os.getcwd())
+    except git.GitError:
+        root = None
+    if level is None:
+        current = load_repo_config(root).delegation if root else \
+            user_settings().get("delegation", RepoConfig().delegation)
+        typer.echo(f"delegation: {current}  (conservative, balanced, fast)")
+        return
+    if level not in pilot.DELEGATIONS:
+        _fail("delegation must be conservative, balanced or fast")
+    if repo:
+        if not root:
+            _fail("--repo needs to run inside a git repo")
+        set_local(root, "delegation", level)
+        typer.echo(f"✓ delegation {level} for this repo (.copse/config.local.json)")
+    else:
+        path = set_user("delegation", level)
+        typer.echo(f"✓ delegation {level} for every repo ({path})")
+    _tell_supervisors_about_delegation(DB())
+
+
+def _tell_supervisors_about_delegation(db: DB) -> None:
+    """Send each running supervisor its repo's delegation rule as it now stands."""
+    from copse import autopilot as pilot
+    from copse.config import load_repo_config
+
+    for ws in db.find_workspaces():
+        running = _running_session(db, ws)
+        if not running:
+            continue
+        try:
+            rule = pilot.delegation_rule(load_repo_config(ws.repo_root))
+            agents.send_message(db, running.id, "[copse] The person changed how readily you delegate. "
+                                "From now on this replaces your earlier delegation rule:\n\n" + rule)
+            typer.echo(f"  told the running supervisor ({running.id})")
+        except (agents.AgentError, ValueError):
+            pass
+
+
 @app.command("autopilot")
 def autopilot_cmd(
     action: Optional[str] = typer.Argument(None, help="on, off, or check (run the milestone checks now). Omit to show progress."),
@@ -743,9 +807,9 @@ def history(
 
 @app.command()
 def learning(
-    reset: bool = typer.Option(False, "--reset", help="Ask the plugin to forget this repo."),
+    reset: bool = typer.Option(False, "--reset", help="Ask the hosted learner to forget this repo."),
 ) -> None:
-    """What the repo's learning plugin has learned about which profiles fit which tasks."""
+    """What copse Pro's hosted learner has learned about which profiles fit which tasks (nothing is learned on this machine)."""
     from copse import learning as learning_mod
     from copse.config import load_repo_config
 
@@ -759,18 +823,21 @@ def learning(
 
     name = plugins.learning_name(cfg)
     if name == plugins.OFF:
-        found = learning_mod.installed()
-        if cfg.learning == plugins.AUTO:
+        configured = (cfg.learning or plugins.OFF).strip()
+        if configured == plugins.AUTO:
             typer.echo("learning is off: hosted learning needs copse Pro "
-                       "(`copse account` shows your plan; `copse account upgrade` gets it). Or set \"learning\" in .copse/config.json to an "
-                       "installed plugin's name" + (f" ({', '.join(found)})." if found else "."))
+                       "(`copse account` shows your plan; `copse account upgrade` gets it). "
+                       "Nothing is learned on this machine.")
+        elif configured == plugins.OFF:
+            typer.echo('learning is off. Set "learning" to "auto" or "cloud" in .copse/config.json '
+                       "to use hosted learning (copse Pro).")
         else:
-            typer.echo('learning is off. Set "learning" in .copse/config.json to a plugin\'s name'
-                       + (f" (installed: {', '.join(found)})." if found else "; no learning plugin is installed."))
+            typer.echo(f'learning is off: "learning": {configured!r} is not a supported value '
+                       '(use "auto", "cloud" or "off"). Learning is hosted only (copse Pro).')
         return
     p = learning_mod.plugin(cfg, repo_root)
     if p is None:
-        typer.echo(f"no learning plugin named {name!r} is installed")
+        typer.echo("hosted learning is unavailable")
         raise typer.Exit(1)
     typer.echo(p.report(reset=reset))
 
@@ -1031,6 +1098,26 @@ def pr(
     ws = _ws(DB(), workspace)
     url = _run(workspaces.pull_request, ws, title, draft)
     typer.echo(url)
+    _offer_delete_on_merge(ws.repo_root)
+
+
+def _offer_delete_on_merge(repo_root: str) -> None:
+    """The first PR in a repo where GitHub keeps merged branches: offer to
+    turn on its automatic deletion (with the person's own gh login)."""
+    if not workspaces.keeps_merged_branches(repo_root):
+        return
+    how = "`gh repo edit --delete-branch-on-merge`"
+    if sys.stdin.isatty() and typer.confirm(
+            "GitHub keeps this repo's branches after their PRs merge. Delete them automatically?",
+            default=True, err=True):
+        if workspaces.delete_branches_on_merge(repo_root):
+            typer.echo("✓ GitHub now deletes a PR's branch when it merges.", err=True)
+            return
+        typer.secho(f"couldn't change it (it needs admin rights on the repo); an admin can run {how}.",
+                    fg="yellow", err=True)
+    elif not sys.stdin.isatty():
+        typer.secho(f"tip: GitHub keeps this repo's branches after their PRs merge; {how} "
+                    "deletes them automatically.", fg="yellow", err=True)
 
 
 @app.command("merge")
@@ -1075,9 +1162,12 @@ def services_cmd(
 def rm(
     workspace: str,
     force: bool = typer.Option(False, "--force", "-f", help="Discard uncommitted changes; ignore teardown failure."),
-    delete_branch: bool = typer.Option(False, "--delete-branch", "-D", help="Also delete the branch (only if merged, unless --force)."),
+    delete_branch: Optional[bool] = typer.Option(None, "--delete-branch/--keep-branch", "-D/-K", help="Delete the branch (only if merged, unless --force), or keep it. Default: delete it once fully merged into its base."),
 ) -> None:
-    """Stop a workspace's agents and remove its worktree. Keeps the branch by default."""
+    """Stop a workspace's agents and remove its worktree; a fully merged branch goes too.
+
+    An unmerged branch is always kept; -K keeps any branch, and a repo can
+    set delete_merged_branches to false."""
     db = DB()
     ws = _ws(db, workspace)
     if ws.base_branch and os.path.isdir(ws.path) and not delete_branch:
@@ -1338,6 +1428,14 @@ def local_models_cmd(repo: Optional[str] = typer.Option(None, "--repo")) -> None
                 f.write(f"== copse: {line}\n")
     except Exception:  # noqa: BLE001 -- detached: nobody to report to
         pass
+
+
+@app.command("_sync-settings", hidden=True)
+def sync_settings_cmd() -> None:
+    """Pull synced settings (copse Pro); detached from `copse`."""
+    from copse.pro import settings_sync
+
+    settings_sync.pull()
 
 
 @app.command("_cull", hidden=True)

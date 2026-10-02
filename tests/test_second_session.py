@@ -70,3 +70,19 @@ def test_pause_and_no_terminal_keep_the_old_behaviour(db, running, monkeypatch):
     monkeypatch.setattr(cli, "_ask_about_running", lambda a: pytest.fail("no terminal to ask in"))
     _start()
     assert paused == ["sup1", "sup1"]
+
+
+def test_any_number_of_sessions_each_get_their_own_worktree(db, running, monkeypatch):
+    spawned = []
+    monkeypatch.setattr(cli, "_ask_about_running", lambda a: "n")
+    monkeypatch.setattr(cli, "_attach", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_cull_detached", lambda *a: None)
+    monkeypatch.setattr(cli, "_local_models_detached", lambda *a: None)
+    monkeypatch.setattr(agents, "spawn", lambda db_, ws, *a, **k: spawned.append(ws) or
+                        Agent(f"sup{len(spawned) + 1}", ws.id, "supervisor", "claude", None, "interactive",
+                              "idle", "%6", None, time.time()))
+    for _ in range(3):
+        _start()
+    assert [ws.branch for ws in spawned] == ["copse/session-2", "copse/session-3", "copse/session-4"]
+    assert len({ws.path for ws in spawned}) == 3
+    assert db.get_agent("sup1").status == "idle"            # the first keeps running

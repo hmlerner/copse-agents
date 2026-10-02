@@ -23,6 +23,7 @@ REFRESH_SECONDS = 2.0
 # How often a running dashboard culls leftover processes and stale workers
 # (see copse.cull), on a thread of its own so the screen never waits on it.
 CULL_SECONDS = 60.0
+HOME_SECONDS = 3.0       # how often a sidebar checks it isn't stranded (agents.sidebar_come_home)
 
 
 def _cull_in_background() -> None:
@@ -750,11 +751,17 @@ def _loop(stdscr, repo_root: str | None, sidebar: bool = False) -> None:
     stale = True
     armed: tuple[str, float] | None = None
     notice, notice_until = "", 0.0
-    culled_at = 0.0
+    culled_at = homed_at = 0.0
     while True:
         if time.time() - culled_at >= CULL_SECONDS:
             culled_at = time.time()
             _cull_in_background()
+        if own_root and time.time() - homed_at >= HOME_SECONDS:
+            homed_at = time.time()
+            try:
+                agents.sidebar_come_home(db, own_root, os.environ.get("TMUX_PANE"))
+            except Exception:  # noqa: BLE001 - never let a move take the sidebar down
+                pass
         h, w = stdscr.getmaxyx()
         width = max(1, w - 2)  # text starts at column 1, after the selection bar
         if stale:

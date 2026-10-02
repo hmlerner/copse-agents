@@ -433,3 +433,33 @@ def test_apply_theme_shows_the_version_in_the_status_bar(session):
     tmux.apply_theme(session)
     left = tmux._tmux("show-options", "-v", "-t", session, "status-left").stdout
     assert "copse" in left and __version__ in left
+
+
+def test_a_stranded_sidebar_comes_home_on_its_own(db, tmp_path, session, monkeypatch):
+    """The sidebar followed the person into a worker's session, and the hook
+    that should have brought it back was missed: its own loop moves it back
+    to the session the person is attached to."""
+    worker_session = "copse_followtest_worker"
+    tmux.ensure_session(worker_session, str(tmp_path), {})
+    try:
+        root_win = make_window(session, "root")
+        worker_win = make_window(worker_session, "worker")
+        root_ws = make_workspace(db, tmp_path, "rootws", session)
+        worker_ws = make_workspace(db, tmp_path, "workerws", worker_session)
+        fake_agent(db, root_ws, root_win, "root1")
+        fake_agent(db, worker_ws, worker_win, "w1", parent="root1", mode="assign")
+        agents._ensure_sidebar(db, "root1", root_ws, worker_win)    # stranded with the worker
+        sidebar = db.get_sidebar_pane("root1")
+        assert tmux.pane_session(sidebar) == worker_session
+
+        attached = {session: False, worker_session: False}
+        monkeypatch.setattr(tmux, "session_attached", lambda name: attached.get(name, False))
+        assert not agents.sidebar_come_home(db, "root1", sidebar)   # nobody anywhere: stay
+        attached[worker_session] = True
+        assert not agents.sidebar_come_home(db, "root1", sidebar)   # the person is right here
+        attached[worker_session], attached[session] = False, True
+        tmux._tmux("select-window", "-t", f"{session}:root")         # what the person looks at
+        assert agents.sidebar_come_home(db, "root1", sidebar)
+        assert tmux.pane_window(sidebar) == tmux.pane_window(root_win)
+    finally:
+        tmux.kill_session(worker_session)

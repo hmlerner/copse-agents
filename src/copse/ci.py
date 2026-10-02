@@ -31,7 +31,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from copse import agents, git, workspaces
-from copse.config import CONFIG_DIR, LOCAL_CONFIG_FILE, config_root
 from copse.db import DB, Agent, Workspace
 
 CI_FEATURE = "ci"
@@ -280,22 +279,9 @@ def _create_pr(ws: Workspace, base: str, title: str, body: str) -> str:
 def set_max_workers(repo_root: str, n: int) -> Path:
     """Cap this repo's parallel workers through ``.copse/config.local.json``
     (gitignored; other keys are kept)."""
-    base = config_root(repo_root) / CONFIG_DIR
-    base.mkdir(parents=True, exist_ok=True)
-    path = base / LOCAL_CONFIG_FILE
-    data: dict = {}
-    if path.is_file():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            data = loaded if isinstance(loaded, dict) else {}
-        except ValueError:
-            data = {}
-    data["max_agents"] = n
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    ignore = base / ".gitignore"
-    if not ignore.exists():
-        ignore.write_text(f"{LOCAL_CONFIG_FILE}\n", encoding="utf-8")
-    return path
+    from copse.config import set_local
+
+    return set_local(repo_root, "max_agents", n)
 
 
 def milestone_rows(db: DB, root_id: str) -> list[dict]:

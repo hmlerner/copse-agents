@@ -1,16 +1,15 @@
-"""The ``cloud`` learning plugin: hosted learning for copse Pro.
+"""The hosted learner client: hosted learning for copse Pro.
 
 ``"learning": "cloud"`` in a repo's ``.copse/config.json`` selects it, and
 the default ``"auto"`` selects it when the verified entitlement includes the
-``learning`` feature (see ``copse.plugins``). It answers ``suggest`` from the
+``learning`` feature (see ``copse.plugins``). It is built in, not loaded from
+an entry point. It answers ``suggest`` from the
 hosted learner and, whenever that can't be used -- no ``learning`` feature in
 the verified entitlement, offline, rate-limited, slow (more than
-``SUGGEST_TIMEOUT``), or any error at all -- from a local learner when one is
-installed as the ``local`` entry point in ``copse.learning`` (the private
-local learner),
-else with no suggestion (None, so copse picks as it would without a plugin).
-Outcomes are always handed to that local learner too. It never raises into
-copse.
+``SUGGEST_TIMEOUT``), or any error at all -- with no suggestion (None, so
+copse routes by weight as it would without a plugin). The learner itself only
+ever runs on the server: nothing is learned on this machine. It never raises
+into copse.
 
 What leaves the machine is fixed by :func:`record_payload` and
 :func:`suggest_payload`: kind/size one-hots from :mod:`copse.pro.features`,
@@ -25,7 +24,7 @@ identity, nothing is sent.
 
 Records are sent from a small bounded queue by one background thread, so
 copse never waits on the network to record; when the queue is full, remote
-records are dropped (the local learner, if any, still has them).
+records are dropped.
 """
 
 from __future__ import annotations
@@ -38,7 +37,6 @@ import threading
 import time
 from typing import Callable
 
-from copse import plugins
 from copse.learning import LearningPlugin, Outcome, TaskInfo
 from copse.pro.features import KIND_WORDS, SIZES, featurize
 from copse.pro.orgkey import OrgKey, OrgKeys, repo_identity
@@ -46,7 +44,6 @@ from copse.pro.orgkey import OrgKey, OrgKeys, repo_identity
 log = logging.getLogger(__name__)
 
 FEATURE = "learning"
-LOCAL_PLUGIN = "local"         # the copse.learning entry point used as the fallback, if installed
 SUGGEST_TIMEOUT = 2.0
 RECORD_TIMEOUT = 5.0
 QUEUE_SIZE = 256
@@ -146,15 +143,20 @@ def record_payload(key: OrgKey, identity: str, task: TaskInfo, outcome: Outcome,
 
 
 def suggest_payload(key: OrgKey, identity: str, task: TaskInfo, candidates: list[str],
-                    cost=None) -> dict | None:
-    """The exact body of ``POST /learning/suggest``, or None to send nothing."""
+                    cost=None, default: str | None = None) -> dict | None:
+    """The exact body of ``POST /learning/suggest``, or None to send nothing.
+    ``default`` is the profile copse would use without learning (the first
+    candidate when not given)."""
     if not candidates or len(candidates) > MAX_CANDIDATES or len(set(candidates)) != len(candidates):
         return None
     if not all(isinstance(c, str) and PROFILE_RE.match(c) for c in candidates):
         return None
+    default = default or candidates[0]
+    if default not in candidates:
+        return None
     body = {"org_id": key.org_id, "key_id": key.key_id,
             "repo_key": key.repo_key(identity), "weight": _weight(task),
-            "features": one_hot(task), "candidates": list(candidates)}
+            "features": one_hot(task), "candidates": list(candidates), "default": default}
     if cost is not None:
         costs = {}
         for c in candidates:
@@ -173,20 +175,11 @@ class _Unavailable(Exception):
     pass
 
 
-def local_plugin(repo_root: str) -> LearningPlugin | None:
-    """The ``local`` learning plugin, if one is installed (the private local learner)."""
-    if LOCAL_PLUGIN not in plugins.installed(plugins.LEARNING):
-        return None
-    p = plugins.load(plugins.LEARNING, LOCAL_PLUGIN, repo_root)
-    return p if isinstance(p, LearningPlugin) else None
-
-
 class CloudLearner(LearningPlugin):
-    def __init__(self, repo_root: str, local: LearningPlugin | None = None, *, client=None,
+    def __init__(self, repo_root: str, *, client=None,
                  store=None, key_store=None, org=None, cost: Callable[[str], int] | None = None,
                  start_thread: bool = True) -> None:
         self.repo_root = repo_root
-        self.local = local if local is not None else local_plugin(repo_root)
         self.cost = cost or (lambda name: cost_rank(name, repo_root))
         self._client, self._store = client, store
         self.keys = OrgKeys(store=store, client=client, key_store=key_store)
@@ -224,8 +217,8 @@ class CloudLearner(LearningPlugin):
 
     def org(self) -> str | None:
         """The active org when the verified entitlement includes hosted
-        learning, else None (always None in air-gap mode, so every answer
-        comes from the local learner). Offline verification only."""
+        learning, else None (always None in air-gap mode, so nothing is
+        sent). Offline verification only."""
         from copse import airgap
 
         if airgap.enabled() or time.time() < self._backoff_until:
@@ -272,8 +265,7 @@ class CloudLearner(LearningPlugin):
 
     def _rounds(self, task: TaskInfo, outcome: Outcome) -> tuple[int, int]:
         """(review rounds, escalations) so far for ``task``'s agent, this
-        outcome included: from the local learner's ledger when it keeps one,
-        else counted here for the life of this process."""
+        outcome included, counted here for the life of this process."""
         if not task.agent_id:
             return 0, 0
         counts = self._counts.setdefault(task.agent_id, [0, 0])
@@ -281,21 +273,9 @@ class CloudLearner(LearningPlugin):
             counts[0] += 1
         elif outcome.event == "escalated":
             counts[1] += 1
-        store = getattr(self.local, "store", None)
-        try:
-            row = store.get(task.agent_id) if store is not None else None
-            if row is not None:
-                return int(row.review_rounds), int(row.escalations)
-        except Exception:  # noqa: BLE001 - the ledger is the local learner's business
-            pass
         return counts[0], counts[1]
 
     def record(self, task: TaskInfo, outcome: Outcome) -> None:
-        if self.local is not None:
-            try:
-                self.local.record(task, outcome)
-            except Exception:  # noqa: BLE001
-                log.warning("local learning record failed", exc_info=True)
         try:
             rounds, escalations = self._rounds(task, outcome)
             if not self.active():
@@ -347,43 +327,51 @@ class CloudLearner(LearningPlugin):
 
     # -- suggesting ---------------------------------------------------------------------------
 
-    def _remote_pick(self, task: TaskInfo, candidates: list[str]) -> str | None:
+    def _remote_pick(self, task: TaskInfo, candidates: list[str],
+                     default: str) -> tuple[str, str | None] | None:
+        """(profile, reason): ``default`` with no reason when the server kept
+        it, the override and its reason otherwise."""
         org = self.org()
         identity = self.identity() if org else None
         if org is None or identity is None:
             return None
-        body = suggest_payload(self.key(org), identity, task, candidates, self.cost)
+        body = suggest_payload(self.key(org), identity, task, candidates, self.cost, default)
         if body is None:
             return None
         resp = self._post(org, "/learning/suggest", body)
         pick = resp.get("profile")
-        return pick if pick in candidates else None
+        if pick not in candidates:
+            return None
+        if resp.get("overrode") is not True or pick == default:
+            return default, None
+        reason = resp.get("reason")
+        return pick, (reason[:200] if isinstance(reason, str) and reason else None)
 
-    def suggest(self, task: TaskInfo, candidates: list[str]) -> str | None:
+    def suggest(self, task: TaskInfo, candidates: list[str],
+                default: str | None = None) -> str | None:
+        """The server's pick (``default`` when it keeps it; ``last_reason``
+        says why when it overrides), or None when it can't be asked."""
+        self.last_reason = None
+        default = default or (candidates[0] if candidates else "")
         pick = None
         try:
-            if candidates and self.active():
+            if candidates and default in candidates and self.active():
                 result: list = []
-                th = threading.Thread(target=lambda: result.append(self._safe_remote(task, candidates)),
-                                      daemon=True)
+                th = threading.Thread(
+                    target=lambda: result.append(self._safe_remote(task, candidates, default)),
+                    daemon=True)
                 th.start()
                 th.join(SUGGEST_TIMEOUT)
-                pick = result[0] if result else None
+                got = result[0] if result else None
+                if got:
+                    pick, self.last_reason = got
         except Exception:  # noqa: BLE001
             pick = None
-        if pick is not None:
-            return pick
-        if self.local is None:
-            return None
-        try:
-            return self.local.suggest(task, candidates)
-        except Exception:  # noqa: BLE001
-            log.warning("local learning suggest failed", exc_info=True)
-            return None
+        return pick
 
-    def _safe_remote(self, task, candidates):
+    def _safe_remote(self, task, candidates, default):
         try:
-            return self._remote_pick(task, candidates)
+            return self._remote_pick(task, candidates, default)
         except Exception as e:  # noqa: BLE001
             log.info("hosted suggest unavailable (%s)", type(e).__name__)
             return None
@@ -391,17 +379,7 @@ class CloudLearner(LearningPlugin):
     # -- reporting ------------------------------------------------------------------------------
 
     def report(self, reset: bool = False) -> str:
-        if self.local is None:
-            local = "no local learner installed; nothing is learned offline"
-        else:
-            try:
-                local = self.local.report(reset=reset)
-            except Exception as e:  # noqa: BLE001
-                local = f"local learner unavailable ({type(e).__name__})"
         state = ("active" if self.active() else
                  "inactive (not logged in, offline, or your plan lacks hosted learning)")
-        return f"cloud learning: {state}\n{local}"
-
-
-def make(repo_root: str) -> CloudLearner:
-    return CloudLearner(repo_root)
+        return (f"cloud learning: {state}\n"
+                "The learner runs on the server; nothing is learned on this machine.")

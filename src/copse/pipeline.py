@@ -91,7 +91,7 @@ def note_removed_unmerged(db: DB, ws: Workspace, actor: Agent | None = None) -> 
 def note_removed_merged(db: DB, ws: Workspace, actor: Agent | None = None,
                         worker: Agent | None = None) -> None:
     """A worktree whose branch had merged is being removed: an event only
-    (the learning plugin heard about the merge). Pass ``worker`` when the
+    (the learner heard about the merge). Pass ``worker`` when the
     workspace's records are already gone."""
     try:
         cfg = load_repo_config(ws.repo_root)
@@ -231,8 +231,7 @@ def _remove(db: DB, ws: Workspace, keep: Agent | None = None) -> str:
             for a in db.list_agents(ws.id):
                 if a.id != keep.id and agents.is_alive(a):
                     agents._stop(db, a)
-        removed = workspaces.remove(db, ws, force=False, delete_branch=False,
-                                    keep_session=keep is not None)
+        removed = workspaces.remove(db, ws, force=False, keep_session=keep is not None)
         return f"Worktree removed; {removed.branch_note or 'branch kept'}."
     except workspaces.WorkspaceError as e:
         return f"(worktree kept: {e})"

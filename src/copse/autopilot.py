@@ -58,13 +58,12 @@ GUIDE = """
 You are this project's manager. Drive the goal to completion without waiting
 to be asked each step.
 
-- Size first. A request you can finish yourself in one sitting (a fix, a
-  change within one area) is not a goal: do it directly, run the targeted
-  tests, and report. No `set_goal`, no workers. Use the rest of this guide
-  only for multi-part work that benefits from milestones and parallel workers.
-- Within a goal, do a milestone's tasks yourself when they're small or you
-  already have the context; `assign` workers only for independent pieces that
-  can run in parallel or run long.
+- Size first, by the delegation rule. A request that rule has you do
+  yourself is not a goal: do it directly, run the targeted tests, and report.
+  No `set_goal`, no workers. Use the rest of this guide only for multi-part
+  work that benefits from milestones and parallel workers.
+- Within a goal, the same rule decides which of a milestone's tasks you do
+  yourself and which you `assign`.
 - The goal: if none is set yet, ask the user what we're building. Turn the
   answer into a goal with 2-6 milestones, each with a `check` command copse can
   run from the root of this checkout that exits 0 only when that milestone is
@@ -97,6 +96,43 @@ to be asked each step.
 - If a message says autopilot is off, stop driving: wait for the user's
   instructions.
 """
+
+DELEGATIONS = ("conservative", "balanced", "fast")
+
+# The repo's "delegation": how readily a supervisor hands work to workers.
+# Delegating buys wall-clock time with tokens: a worker plus its review costs
+# several times what doing the change in the supervisor's own chat does.
+DELEGATION = {
+    "conservative": """## Delegation rule: conservative (save tokens)
+
+Delegating costs far more than doing: a worker plus its review takes about ten
+times the tokens of making the same change yourself. Do directly anything you
+can finish in one sitting within one area (a fix, a small feature, a doc
+change), and never hand off code you've already read. Delegate only work that
+is genuinely parallel (independent parts that touch different files) or long
+(more than about 15 minutes of work).""",
+    "balanced": """## Delegation rule: balanced
+
+Delegating buys time with tokens: a worker plus its review costs several times
+what the same change costs in your own chat. Do small things directly: a fix,
+a change of a few files in one area, anything you'd finish in about five
+minutes, or work whose code you've already read. Delegate when a request has
+two or more independent parts that can run side by side, or a piece that
+would take more than about ten minutes; give each part its own worker.""",
+    "fast": """## Delegation rule: fast (save time)
+
+The person prefers speed to token cost. Split any request with more than one
+independent part into parallel workers straight away, up to the worker limit,
+and delegate any single piece of more than a few minutes, so your own chat
+stays free to plan, answer and merge. Do only trivial edits yourself (a typo,
+a one-line config change), or what you must do before workers can start.""",
+}
+
+
+def delegation_rule(cfg: RepoConfig) -> str:
+    level = cfg.delegation if cfg.delegation in DELEGATION else "balanced"
+    return DELEGATION[level]
+
 
 KICKOFF = (
     "[copse autopilot] The goal in .copse/goals.md is loaded: {goal} ({n} milestones). "
@@ -366,10 +402,12 @@ def _route_by_weight(db: DB, cfg: RepoConfig, repo_root: str, weight: str, task:
             remaining.append(name)
     if not remaining:
         return None, False, f"every {weight} candidate was out ({'; '.join(skipped) or 'none configured'})"
-    pick = learning.choose(db, cfg, repo_root, task, files, candidates=remaining, weight=weight)
+    pick, reason = learning.choose_why(db, cfg, repo_root, task, files, candidates=remaining,
+                                       weight=weight, default=remaining[0])
     name = pick or remaining[0]
     why = f"weight {weight} -> {name}"
-    detail = ["learning picked it" if pick else "", *skipped]
+    picked = f"learning picked it: {reason}" if reason else "learning picked it"
+    detail = [picked if pick else "", *skipped]
     detail = [d for d in detail if d]
     if detail:
         why += f" ({', '.join(detail)})"
@@ -382,8 +420,8 @@ def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None
     """The worker profile for a delegation, and whether learning chose it:
     ``requested`` if given, else the first unverified milestone's profile in
     the caller's session, else the repo's routing for ``weight`` (available
-    candidates only, a learning plugin choosing among them), else a learning
-    plugin's pick among ``learning_candidates``, else the repo's
+    candidates only, the hosted learner choosing among them), else the hosted
+    learner's pick among ``learning_candidates``, else the repo's
     ``default_agent``. Raises AutopilotError if it doesn't exist. An
     explanation of a routed pick is appended to ``why``."""
     name = (requested or "").strip()
@@ -406,7 +444,8 @@ def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None
             if why is not None:
                 why.append(note)
         if not name:
-            name = learning.choose(db, cfg, repo_root, task, files, weight=weight) or ""
+            name = learning.choose(db, cfg, repo_root, task, files, weight=weight,
+                                   default=cfg.default_agent) or ""
             learned = bool(name)
             name = name or cfg.default_agent
     try:

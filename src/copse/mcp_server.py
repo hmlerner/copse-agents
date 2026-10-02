@@ -615,9 +615,11 @@ def submit_review(approved: bool, summary: str) -> str:
 
 
 @mcp.tool()
-def remove_workspace(workspace: str, delete_branch: bool = False, force: bool = False) -> str:
-    """Remove a workspace's worktree and stop its agents. The branch is kept
-    unless delete_branch=true (which only deletes it if merged, unless force).
+def remove_workspace(workspace: str, delete_branch: bool | None = None, force: bool = False) -> str:
+    """Remove a workspace's worktree and stop its agents. By default the
+    branch is deleted once it is fully merged into its base (the repo's
+    delete_merged_branches) and kept otherwise; delete_branch=false always
+    keeps it, delete_branch=true deletes it (only if merged, unless force).
     If a queued task (see assign/handoff's depends_on) was waiting on this
     workspace's branch and it still had unmerged commits, that task is
     cancelled and its caller is told."""

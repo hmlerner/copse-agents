@@ -7,7 +7,7 @@ Lifecycle:
   work    -> diff vs. base, sync (rebase/merge base in), commit, push, PR,
              merge back
   remove  -> refuse if dirty (unless forced), run teardown, kill tmux,
-             remove worktree; the branch is kept unless asked otherwise
+             remove worktree, and its branch once fully merged (delete_merged_branches)
 """
 
 from __future__ import annotations
@@ -431,9 +431,13 @@ class Removed:
     teardown: SetupResult | None
 
 
-def remove(db: DB, ws: Workspace, *, force: bool = False, delete_branch: bool = False,
+def remove(db: DB, ws: Workspace, *, force: bool = False, delete_branch: bool | None = None,
            keep_session: bool = False) -> Removed:
-    """``keep_session`` leaves the workspace's tmux session running: for a
+    """``delete_branch``: True deletes the branch (only if merged, unless
+    ``force``), False keeps it, and None (the default) follows the repo's
+    ``delete_merged_branches``: the branch goes once it is fully merged into
+    its base, so finished branches don't pile up, and is kept otherwise.
+    ``keep_session`` leaves the workspace's tmux session running: for a
     caller that itself runs in it (the pipeline's reviewer), which killing
     the session would take down mid-cleanup."""
     if ws.kind == "main":
@@ -468,7 +472,15 @@ def remove(db: DB, ws: Workspace, *, force: bool = False, delete_branch: bool = 
         git.run(["worktree", "prune"], ws.repo_root, check=False)
 
     deleted, note = False, None
-    if delete_branch:
+    if delete_branch is None:
+        if cfg.delete_merged_branches and _merged_into_base(ws):
+            try:
+                git.delete_branch(ws.repo_root, ws.branch, force=True)
+                return _forget(db, ws, Removed(True, f"merged branch {ws.branch} deleted", teardown))
+            except git.GitError:
+                pass  # e.g. checked out in another worktree
+        note = f"branch {ws.branch} kept"
+    elif delete_branch:
         try:
             git.delete_branch(ws.repo_root, ws.branch, force=force)
             deleted = True
@@ -476,8 +488,19 @@ def remove(db: DB, ws: Workspace, *, force: bool = False, delete_branch: bool = 
             note = f"kept branch {ws.branch}: {e} (use --force to delete anyway)"
     else:
         note = f"branch {ws.branch} kept"
+    return _forget(db, ws, Removed(deleted, note, teardown))
+
+
+def _forget(db: DB, ws: Workspace, removed: Removed) -> Removed:
     db.delete_workspace(ws.id)
-    return Removed(deleted, note, teardown)
+    return removed
+
+
+def _merged_into_base(ws: Workspace) -> bool:
+    """Every commit on ``ws.branch`` is already in its base branch."""
+    return bool(ws.base_branch) and git.ok(
+        ["merge-base", "--is-ancestor", f"refs/heads/{ws.branch}", f"refs/heads/{ws.base_branch}"],
+        ws.repo_root)
 
 
 # -- review and integration ------------------------------------------------
@@ -561,6 +584,31 @@ def pull_request(ws: Workspace, title: str | None = None, draft: bool = False) -
     if not web:
         raise WorkspaceError("pushed, but couldn't work out a web URL for origin")
     return f"{web}/compare/{base}...{ws.branch}?expand=1"
+
+
+def keeps_merged_branches(repo_root: str) -> bool:
+    """Once per repo: True if GitHub keeps a PR's branch after it merges (so
+    pushed branches pile up). False when unknown, already asked, or fine."""
+    if not shutil.which("gh") or git.ok(["config", "--get", "copse.deleteOnMergeTip"], repo_root):
+        return False
+    try:
+        proc = subprocess.run(["gh", "repo", "view", "--json", "deleteBranchOnMerge", "-q", ".deleteBranchOnMerge"],
+                              cwd=repo_root, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    git.run(["config", "copse.deleteOnMergeTip", "shown"], repo_root, check=False)
+    return proc.stdout.strip() == "false"
+
+
+def delete_branches_on_merge(repo_root: str) -> bool:
+    """Turn on GitHub's automatic deletion of merged PR branches (needs admin)."""
+    try:
+        return subprocess.run(["gh", "repo", "edit", "--delete-branch-on-merge"], cwd=repo_root,
+                              capture_output=True, text=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def merge_back(db: DB, ws: Workspace, squash: bool = False) -> str:

@@ -139,9 +139,9 @@ and you're back at your prompt. The whole session is paused: its
 workers stop too, and everything is kept (branches, worktrees,
 queued messages, and each agent's Claude conversation). `copse continue` (or
 `copse -c`) picks up the most recent paused session and lists the others by id
-(`copse continue <id>`). Plain `copse` always starts fresh. If a session is still running in that folder, it asks first: open that one, start the new one in its own worktree (branch `copse/session-N`, cut from what you have checked out, so both run at once without sharing files), or pause it and start fresh. Without a terminal to ask in, it pauses the old one. `copse sessions` lists
+(`copse continue <id>`). Plain `copse` always starts fresh. If a session is still running in that folder, it asks first: open that one, start the new one in its own worktree (branch `copse/session-N`, cut from what you have checked out, so they run at once without sharing files), or pause it and start fresh. There's no limit: each further `copse` there can start another session in its own worktree (`copse/session-2`, `-3`, ...). Without a terminal to ask in, it pauses the old one. `copse sessions` lists
 what's paused. copse keeps the newest 3 paused sessions per repo for up to 7 days;
-cleanup never merges anything or deletes branches, and worktrees with uncommitted
+cleanup never merges anything or deletes an unmerged branch, and worktrees with uncommitted
 changes are kept.
 
 **Not in a git repo?** `copse` still works. It starts a *scratch session*: a
@@ -158,7 +158,7 @@ copse new fix-login -p "Fix the login redirect bug; add a test"
 copse ls                                    # workspaces, agents, ahead/behind
 copse diff fix-login --stat
 copse pr fix-login                          # push + gh pr create
-copse rm fix-login                          # keeps the branch
+copse rm fix-login                          # deletes the branch only if it's merged (-K keeps it)
 ```
 
 ## Recommended use
@@ -298,11 +298,12 @@ your own status line prints, so what you see doesn't change.
 | `copse start [-a PROFILE] [-p PROMPT] [--no-watch] [--no-autopilot] [-b BRANCH] [-w PATH]` | the same, with options; `-b`/`-w` run it in that branch's worktree (created if needed, or the one you already made), which gets the repo's `.copse` config |
 | `copse handover --to BRANCH\|PATH [-n NOTE]` | hand the session to a new supervisor there: goal and milestones, workers, queued tasks and your note move across; the old one is paused |
 | `copse autopilot [on\|off\|check]` | the goal's progress; turn autopilot on or off; run the checks now |
+| `copse delegation [conservative\|balanced\|fast]` | how readily the supervisor delegates: fewest tokens, the default, or quickest |
 | `copse transfer [REPO] [--from SESSION] [-b BRANCH]` | move a scratch session's work into a real repo |
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
 | `copse history --share [--session ID]` | a few lines about this session to paste into Slack or a post: goal, milestones verified, workers, merges, reviews (and how many by a different model), parallel speedup, tokens |
-| `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
+| `copse learning [--reset]` | what copse Pro's hosted learner has learned about this repo (see `learning` below; nothing is learned on your machine); `--reset` asks it to forget this repo |
 | `copse account [login\|logout\|status\|upgrade\|portal\|org]` | paid features: bare `copse account` shows what your plan has and how to get the rest (see "copse Pro and Team" below) |
 | `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
@@ -430,10 +431,12 @@ Autopilot, merge gates and cleanup:
 | `add_dirs` | `[]` | directories outside the worktree that Claude Code agents may use (`--add-dir`; full tool access, see "Directories outside the workspace") |
 | `local_models` | `true` | when a native profile points at Ollama on this machine and it isn't running, `copse` starts `ollama serve` in the background (with the context length the profiles need) and loads their models; `false` leaves it to you |
 | `sidebar` | `"left"` | where the dashboard sits in each window: `"left"` of the chat, or `"bottom"` (full-width rows under it) |
+| `delegation` | `"balanced"` | how readily the supervisor hands work to workers. `"conservative"` does most work in its own chat (fewest tokens), `"fast"` splits any multi-part request across parallel workers straight away (quickest, most tokens). `copse delegation fast` saves it for every repo and session (in `~/.copse/config.json`; `--repo` for this repo only) and tells a running supervisor |
+| `delete_merged_branches` | `true` | removing a worktree (after a merge, `copse rm`, `copse prune`, session cleanup) also deletes its branch once every commit is in its base, so finished branches don't pile up. An unmerged branch is always kept; `false` keeps them all. If GitHub keeps merged PR branches, the first `copse pr` in a repo offers to turn on its automatic deletion with your `gh` login (repo admins only) |
 | `pr_footer` | `true` | `copse pr` and `copse ci` end the PR description with one line: "🌲 Built in parallel and verified with copse" (a link). `false` leaves it out. Never added to commit messages |
 | `message_delivery` | `"pull"` | how agent and copse messages reach an interactive supervisor: `"pull"` keeps them unread and delivers one notice ("copse (16:25:03): 2 new messages (from 9f742c5c, pipeline). Call read_messages."; the time keeps Claude Code from dropping a repeat; the sidebar shows an unread count), `"push"` delivers each message's text. Messages you send (`copse send`, typing) and messages to workers are always pushed |
-| `learning` | `"auto"` | which learning plugin records how worker tasks turned out and suggests profiles (see below): `"auto"` is copse Pro's hosted learning when your plan includes it and nothing otherwise; `"off"`; or an installed plugin's name |
-| `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
+| `learning` | `"auto"` | hosted learning (copse Pro, via the API; see below): `"auto"` uses it when your plan includes it and nothing otherwise; `"cloud"`; `"off"`. Any other value means off |
+| `learning_candidates` | `[]` | the profile names the hosted learner may pick from |
 | `plugins` | `{}` | which installed plugin to use per group, e.g. `{"events": "<name>", "policy": "off"}`; unset, a group uses the only plugin installed in it, except `events`, which uses every installed one (several names: `"pro, audit"`; see "Plugins" below) |
 | `routing` | see below | for each task weight (`light`, `medium`, `heavy`), the profiles `assign`/`handoff` try in order |
 | `services` | `[]` | per-worktree Docker services (copse Pro; see "Per-worktree services" below) |
@@ -479,32 +482,28 @@ keep theirs):
 
 `developer-codex` runs on Codex; `developer-heavy` on Claude Fable at high effort.
 A profile is skipped when its CLI isn't installed (`claude`, `codex`, `agy`), the
-local model server isn't answering, or its provider is at your `usage_limit`. If a
-learning plugin is selected it chooses among the profiles left; otherwise the first
+local model server isn't answering, or its provider is at your `usage_limit`. If
+hosted learning is on it chooses among the profiles left; otherwise the first
 wins. When every candidate is out, the repo's `default_agent` runs. The reply says
 what was picked and why, e.g. `weight medium -> developer (Codex at 93%, skipped developer-codex)`.
 An `agent_profile` you pass, or a milestone's `profile`, always wins over weight.
 
-**Learning plugins.** copse can hand what happens to each worker task (review
-verdicts, times the supervisor had to step in, merged or abandoned, tokens, time)
-to a learning plugin, and ask it to pick a profile from `learning_candidates` when
-`assign` gets none and no milestone names one; the reply then says
-`profile chosen by learning: X`. A profile named by you or by a milestone always
-wins. The default `"learning": "auto"` uses copse Pro's hosted learner (`cloud`)
-when you're logged in to a plan that includes it, and nothing otherwise (see
-"copse Pro and Team" below). Any other plugin is a package registering a
-`copse.learning` entry point (see `copse/learning.py` for the interface),
-installed with `uv tool install copse-agents --with <plugin>` and selected with
-`"learning": "<name>"`; `"off"` turns learning off. A plugin that's missing or
-fails never breaks a review, merge or delegation.
+**Hosted learning (copse Pro).** With a plan that includes it, copse learns
+which of your `learning_candidates` profiles suits which kind of task, and picks
+one when `assign` gets no profile and no milestone names one (the reply says
+`learning picked it` and why). A profile you or a milestone name always wins.
+Learning is per person on Pro and per organization on Team, runs only on
+PawDelta's servers, and your data stays private (see "copse Pro and Team").
+`"learning": "auto"` (the default) uses it when your plan includes it,
+`"cloud"` forces it and `"off"` turns it off. If the API is unreachable, work
+carries on unaffected.
 
-**Plugins.** Learning is one of four entry-point groups a package can extend
+**Plugins.** Three entry-point groups let a package extend
 copse through (`copse/plugins.py` loads them; each interface is in the module
 named):
 
 | group | interface | what copse does with it |
 |---|---|---|
-| `copse.learning` | `copse/learning.py` | records task outcomes, suggests profiles (selected with `learning`, above) |
 | `copse.events` | `copse/events.py` | is told when a task starts (`assign`/`handoff`), a reviewer decides, the supervisor is asked to step in, a branch merges or a worktree is removed: the repo, the worker's id, branch, profile, provider and model, who caused it, and when. Never a diff, a prompt or the task text |
 | `copse.policy` | `copse/policy.py` | may refuse a delegation or a merge with a reason; `assign`/`handoff` then reply "Not started: ..." and `merge_workspace` (and the pipeline) "Not merged: ..." |
 | `copse.account` | `copse/account.py` | handles `copse account ...` |
@@ -518,15 +517,15 @@ group fans out: every installed events plugin hears every event, unless
 With no plugin, every delegation and merge is allowed and nothing is reported.
 A plugin that's missing, broken or raises is logged and ignored, never failing
 what copse was doing. copse's own Pro, Team and Enterprise plugins (`pro` in
-the events, policy and account groups, `audit` in events, `cloud` in learning;
+the events, policy and account groups, `audit` in events;
 `src/copse/pro`) are always installed and do nothing until you log in to a
 plan that includes them.
 
 ## copse Pro and Team
 
 copse is complete on its own. copse Pro adds hosted learning (which profile
-to use for which kind of task, learned across every clone of a repo and
-shared within your org) and copse Team adds org policies (allowed providers
+to use for which kind of task; per person on Pro, per organization on Team,
+and kept private) and copse Team adds org policies (allowed providers
 and models, human review before merges) and an audit feed of what copse did.
 Plans and prices: https://pawdelta.com/copse#pricing.
 
@@ -592,8 +591,8 @@ them). With it on:
 
 * **No outbound traffic.** Every copse Pro request (login, entitlement
   refresh, key fetches, hosted learning, the team policy, the audit feed) is
-  refused before it reaches the network. Learning falls back to the local
-  learner, audit events are not recorded, and the entitlement comes from an
+  refused before it reaches the network. Learning is off (nothing is learned
+  locally), audit events are not recorded, and the entitlement comes from an
   offline license that is never refreshed.
 * **Local models only.** No agent with a hosted provider (`claude`, `codex`,
   `antigravity`, ...) is launched: not a worker, not a reviewer, not a
@@ -775,7 +774,13 @@ find by branch or workspace name/id.
 
 `.copse/config.local.json` is gitignored and overrides keys for you only. For
 `setup`/`teardown` it can also give `{"before": [...], "after": [...]}` to run
-commands around the team's list.
+commands around the team's list. `~/.copse/config.json` holds your own defaults
+for every repo (any key except the command lists, like `delegation` or
+`sidebar`); a repo's two files override it. With copse Pro or higher, those
+preferences (`delegation`, `sidebar`, `message_delivery`, `pr_footer`,
+`delete_merged_branches`, `max_agents`, `autopilot`, `plan_first`, `stale_after`,
+`usage_limit`, `review_rounds`) sync across your machines (last change wins; nothing
+else in the file leaves the machine); `copse account sync` syncs now.
 
 Setup, teardown, and agents all see these variables: `COPSE_ROOT_PATH`,
 `COPSE_WORKSPACE_PATH`, `COPSE_WORKSPACE_NAME`, `COPSE_WORKSPACE_ID`,

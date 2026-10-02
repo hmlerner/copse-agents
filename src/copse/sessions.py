@@ -141,7 +141,7 @@ def _forget(db: DB, s: Session) -> None:
         if os.path.isdir(ws.path) and git.dirty_files(ws.path):
             continue  # uncommitted work: keep it, quietly
         try:
-            workspaces.remove(db, ws, force=False, delete_branch=False)
+            workspaces.remove(db, ws, force=False)
         except (workspaces.WorkspaceError, git.GitError):
             pass
 

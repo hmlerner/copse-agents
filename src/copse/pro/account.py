@@ -38,6 +38,7 @@ USAGE = """usage: copse account [<command>] [--base-url URL]
             print the checkout URL for copse Team on a team org you administer
             (default: the current org)
   portal [--org ORG]  open the billing portal (invoices, seats, cancellation)
+  sync      sync your user-wide settings (~/.copse/config.json) with your account now
   org list          list the orgs you belong to
   org create <name> create a team org you own (then `upgrade --team`)
   org invite <email> [--admin]  invite someone to the current org; prints the code
@@ -262,7 +263,7 @@ class ProAccount(_OrgCommands):
             "features": not rest, "login": not rest, "logout": not rest, "status": not rest,
             "upgrade": not rest and (bool(opts["team"]) == (seats is not None)) and (seats or 1) >= 1
             and (opts["org"] is None or bool(opts["team"])),
-            "portal": not rest,
+            "portal": not rest, "sync": not rest,
             "org": (sub in ("list", "policy") and len(rest) <= 1)
             or (sub in ("use", "invite", "join") and len(rest) == 2)
             or (sub == "create" and len(rest) >= 2)
@@ -308,6 +309,29 @@ class ProAccount(_OrgCommands):
                 webbrowser.open(url)
             except Exception:  # noqa: BLE001 - the printed URL is enough
                 pass
+
+    def cmd_sync(self, base: str | None) -> int:
+        from copse.pro import settings_sync
+
+        client = self._client(base)
+        if not settings_sync.entitled(store=self.store):
+            # A license signed before the plan gained settings sync: fetch a
+            # fresh one once, rather than wait for its scheduled renewal.
+            try:
+                auth.refresh(client, self.store)
+                license.clear_cache()
+            except Exception:  # noqa: BLE001 - offline or logged out: sync says why
+                pass
+        r = settings_sync.sync(client=client, store=self.store)
+        if r.action == "skipped":
+            self._say(f"Settings not synced: {r.reason}")
+            return 0
+        verb = {"pulled": "Updated from your account", "pushed": "Sent to your account",
+                "unchanged": "Settings already in sync"}[r.action]
+        self._say(verb + (":" if r.changes else "."))
+        for key, (old, new) in sorted(r.changes.items()):
+            self._say(f"  {key}: {'-' if old is None else old} -> {'-' if new is None else new}")
+        return 0
 
     def cmd_features(self, base: str | None) -> int:
         try:
@@ -392,7 +416,7 @@ class ProAccount(_OrgCommands):
                       "the entitlement updates on its next refresh)")
         self._say(f"  features  {', '.join(sorted(ent.features)) or '-'}")
         cloud = "learning" in ent.features and not ent.in_grace
-        self._say(f"  learning  {'cloud (hosted learning active)' if cloud else 'local only'}"
+        self._say(f"  learning  {'cloud (hosted learning active)' if cloud else 'off (no hosted learning)'}"
                   + ("" if cloud or 'learning' not in ent.features
                      else " -- offline; hosted learning resumes after a refresh"))
         self._say(f"  expires   {_when(ent.exp)}")
