@@ -258,6 +258,7 @@ def start(
     _cull_detached(ws.repo_root)
     typer.echo(f"✓ {a.profile} agent {a.id} in {ws.id} ({ws.branch})")
     _local_models_detached(ws.repo_root)
+    _settings_sync_detached()
     if autopilot:
         _say_autopilot(db, a.id)
     if attach:
@@ -294,6 +295,15 @@ def _local_models_detached(repo_root: str) -> None:
     who = ", ".join(sorted({n for s in pending for n in s.profiles}))
     typer.echo(f"  local models: starting ollama in the background for {who} (log: {serve.log_path()})")
     subprocess.Popen([*copse_invocation(), "_local-models", "--repo", repo_root], start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _settings_sync_detached() -> None:
+    """Pull this person's synced settings (copse Pro) without making them
+    wait; the helper does nothing unless the plan includes settings sync."""
+    from copse.providers import copse_invocation
+
+    subprocess.Popen([*copse_invocation(), "_sync-settings"], start_new_session=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -1415,6 +1425,14 @@ def local_models_cmd(repo: Optional[str] = typer.Option(None, "--repo")) -> None
                 f.write(f"== copse: {line}\n")
     except Exception:  # noqa: BLE001 -- detached: nobody to report to
         pass
+
+
+@app.command("_sync-settings", hidden=True)
+def sync_settings_cmd() -> None:
+    """Pull synced settings (copse Pro); detached from `copse`."""
+    from copse.pro import settings_sync
+
+    settings_sync.pull()
 
 
 @app.command("_cull", hidden=True)

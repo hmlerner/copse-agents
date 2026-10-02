@@ -780,7 +780,11 @@ find by branch or workspace name/id.
 `setup`/`teardown` it can also give `{"before": [...], "after": [...]}` to run
 commands around the team's list. `~/.copse/config.json` holds your own defaults
 for every repo (any key except the command lists, like `delegation` or
-`sidebar`); a repo's two files override it.
+`sidebar`); a repo's two files override it. With copse Pro or higher, those
+preferences (`delegation`, `sidebar`, `message_delivery`, `pr_footer`,
+`delete_merged_branches`, `max_agents`, `autopilot`, `plan_first`, `stale_after`,
+`usage_limit`, `review_rounds`) sync across your machines (last change wins; nothing
+else in the file leaves the machine); `copse account sync` syncs now.
 
 Setup, teardown, and agents all see these variables: `COPSE_ROOT_PATH`,
 `COPSE_WORKSPACE_PATH`, `COPSE_WORKSPACE_NAME`, `COPSE_WORKSPACE_ID`,

@@ -106,7 +106,11 @@ class FakeBackend(FakeTransport):
             "GET /me": self._me, "POST /billing/checkout": self._checkout,
             "POST /billing/portal": self._portal, "POST /token/revoke": self._revoke,
             "POST /ci/entitlement": self._ci_entitlement,
+            "GET /me/settings": self._get_settings, "PUT /me/settings": self._put_settings,
         })
+        self.settings: dict = {}                             # /me/settings state
+        self.settings_at: float | None = None
+        self.settings_allowed = True                         # False: 403 entitlement_required
         self.key, self.delay, self.plan = signing_key, delay, plan
         self.n = 0
         self.refresh_tokens: dict[str, str] = {}
@@ -195,6 +199,26 @@ class FakeBackend(FakeTransport):
             return 401, {"error": "invalid_token"}
         return 200, {"sub": "user_1", "email": "dev@example.test", "org_id": "org_1",
                      "plan": self.plan, "status": "active", "seats": 5}
+
+    def _get_settings(self, form, headers):
+        if not self._bearer(headers):
+            return 401, {"error": "invalid_token"}
+        if not self.settings_allowed:
+            return 403, {"error": "entitlement_required"}
+        return 200, {"settings": dict(self.settings), "updated_at": self.settings_at}
+
+    def _put_settings(self, form, headers):
+        if not self._bearer(headers):
+            return 401, {"error": "invalid_token"}
+        if not self.settings_allowed:
+            return 403, {"error": "entitlement_required"}
+        if set(form) != {"settings"} or not isinstance(form["settings"], dict):
+            return 422, {"error": "invalid_request"}
+        if len(json.dumps(form)) > 4096:
+            return 413, {"error": "too_large"}
+        self.settings = dict(form["settings"])           # replaces the whole map
+        self.settings_at = time.time()
+        return 200, {"settings": dict(self.settings), "updated_at": self.settings_at}
 
     def _checkout(self, form, headers):
         if not self._bearer(headers):

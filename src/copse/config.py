@@ -214,7 +214,20 @@ def set_user(key: str, value: object) -> Path:
     data = _read_json(path)
     data[key] = value
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _sync_setting(key)
     return path
+
+
+def _sync_setting(key: str) -> None:
+    """Push a changed user-wide setting to copse Pro (settings sync) when
+    entitled; never raises, never waits more than a few seconds."""
+    try:
+        from copse.pro import settings_sync
+
+        if key in settings_sync.SYNCED_KEYS:
+            settings_sync.push_soon()
+    except Exception:  # noqa: BLE001 - sync is a convenience
+        pass
 
 
 def set_local(repo_root: str | Path, key: str, value: object) -> Path:
