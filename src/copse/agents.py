@@ -327,6 +327,23 @@ def _open_window(db: DB, agent: Agent, ws: Workspace, name: str, argv: list[str]
     return target
 
 
+def _note_sidebar_move(why: str, pane: str, target_pane: str) -> None:
+    """One line per sidebar move in ~/.copse/sidebar.log (kept short), so a
+    sidebar that ends up somewhere odd can be traced to what moved it."""
+    try:
+        from copse.config import copse_home
+
+        src, dst = tmux.pane_session(pane), tmux.pane_session(target_pane)
+        line = (f"{time.strftime('%Y-%m-%d %H:%M:%S')} {why}: {src} -> {dst} "
+                f"(attached: {src}={tmux.session_attached(src or '')}, "
+                f"{dst}={tmux.session_attached(dst or '')})\n")
+        path = copse_home() / "sidebar.log"
+        lines = path.read_text().splitlines(keepends=True)[-199:] if path.exists() else []
+        path.write_text("".join(lines) + line)
+    except Exception:  # noqa: BLE001 - a diagnostic must never break a move
+        pass
+
+
 SIDEBAR_COLUMNS = 30
 SIDEBAR_TAG = tmux.SIDEBAR_TAG
 # Set on every agent pane at creation (see _open_window), so a pane can say
@@ -427,6 +444,7 @@ def _ensure_sidebar(db: DB, root_id: str, ws: Workspace, target_pane: str) -> No
         if _valid_sidebar(existing, root_id):
             assert existing is not None
             if tmux.pane_window(existing) != tmux.pane_window(target_pane):
+                _note_sidebar_move("launch", existing, target_pane)
                 tmux.move_pane(existing, target_pane, SIDEBAR_COLUMNS, _sidebar_position(ws))
             return
         _create_sidebar(db, root_id, ws, target_pane)
@@ -512,6 +530,7 @@ def sidebar_come_home(db: DB, root_id: str, pane: str | None) -> bool:
             sessions.append(ws.tmux_session)
     for name in sessions:
         if name != here and tmux.session_attached(name):
+            _note_sidebar_move(f"come home from {here}", pane, pane)
             sidebar_follow(db, name)
             return tmux.pane_session(pane) == name
     return False
@@ -579,6 +598,7 @@ def sidebar_follow(db: DB, session: str) -> None:
         if not target_pane:
             return
         root_ws = db.get_workspace(root.workspace_id)
+        _note_sidebar_move(f"follow {session}", sidebar, target_pane)
         tmux.move_pane(sidebar, target_pane, SIDEBAR_COLUMNS,
                        _sidebar_position(root_ws) if root_ws else "left")
 
