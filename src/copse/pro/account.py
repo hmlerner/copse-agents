@@ -313,7 +313,16 @@ class ProAccount(_OrgCommands):
     def cmd_sync(self, base: str | None) -> int:
         from copse.pro import settings_sync
 
-        r = settings_sync.sync(client=self._client(base), store=self.store)
+        client = self._client(base)
+        if not settings_sync.entitled(store=self.store):
+            # A license signed before the plan gained settings sync: fetch a
+            # fresh one once, rather than wait for its scheduled renewal.
+            try:
+                auth.refresh(client, self.store)
+                license.clear_cache()
+            except Exception:  # noqa: BLE001 - offline or logged out: sync says why
+                pass
+        r = settings_sync.sync(client=client, store=self.store)
         if r.action == "skipped":
             self._say(f"Settings not synced: {r.reason}")
             return 0
