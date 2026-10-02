@@ -222,9 +222,11 @@ def start(
 ) -> None:
     """Start a fresh chat with an agent here (default: a supervisor), with the dashboard alongside.
 
-    A session still running here is paused first; `copse continue` brings
-    paused sessions back. With --branch or --worktree it runs in that
-    worktree instead, which gets the repo's .copse config."""
+    If a session is still running here, you choose: open it, start the new
+    one in its own worktree (both run at once), or pause it and start fresh.
+    Without a terminal to ask in, it's paused, and `copse continue` brings
+    it back. With --branch or --worktree it runs in that worktree instead,
+    which gets the repo's .copse config."""
     from copse.config import load_repo_config
 
     db = DB()
@@ -232,6 +234,15 @@ def start(
         ws = _run(workspaces.checkout_for, db, os.getcwd(), branch=branch, worktree=worktree)
     else:
         ws = _here_or_scratch(db, reuse_scratch=False)
+        running = _running_session(db, ws)
+        if running and attach and sys.stdin.isatty():
+            choice = _ask_about_running(running)
+            if choice == "o":
+                _attach(ws, running.tmux_window)
+                return
+            if choice == "n":
+                ws = _run(_session_worktree, db, ws)
+                typer.echo(f"✓ new session in its own worktree: {ws.path} ({ws.branch})")
     _preflight(agent, provider, ws.repo_root)
     # Nothing slow before the chat starts: the paused session's leftover
     # processes, old paused sessions' worktrees and the pool refill are all
@@ -307,6 +318,33 @@ def _say_autopilot(db: DB, root_id: str) -> None:
     else:
         typer.echo("  autopilot: on. Tell the supervisor what we're building.")
     typer.echo("  `copse autopilot off` hands the wheel back to you.")
+
+
+def _running_session(db: DB, ws: Workspace):
+    """The live session (its interactive agent) in this checkout, if any."""
+    for a in db.list_agents(ws.id):
+        if a.mode == "interactive" and a.status not in ("paused", "done") and agents.is_alive(a):
+            return a
+    return None
+
+
+def _ask_about_running(running) -> str:
+    import click
+
+    typer.echo(f"A copse session is already running here ({running.id}).")
+    typer.echo("  [o] open it   [n] new session in its own worktree   [p] pause it and start fresh")
+    return typer.prompt("Which", type=click.Choice(["o", "n", "p"]), default="o", show_choices=False)
+
+
+def _session_worktree(db: DB, ws: Workspace) -> Workspace:
+    """A worktree for a second session in this repo: branch copse/session-N,
+    cut from what this checkout has checked out, so the two sessions never
+    share files or a branch."""
+    n = 2
+    while git.ok(["rev-parse", "--verify", "--quiet", f"refs/heads/copse/session-{n}"], ws.repo_root):
+        n += 1
+    return workspaces.create(db, ws.repo_root, f"copse/session-{n}", base=ws.branch or None,
+                             start=git.out(["rev-parse", "HEAD"], ws.path), apply_prefix=False).workspace
 
 
 def _pause_running(db: DB, ws: Workspace, stop_procs: bool = True) -> None:

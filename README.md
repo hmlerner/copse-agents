@@ -135,7 +135,7 @@ and you're back at your prompt. The whole session is paused: its
 workers stop too, and everything is kept (branches, worktrees,
 queued messages, and each agent's Claude conversation). `copse continue` (or
 `copse -c`) picks up the most recent paused session and lists the others by id
-(`copse continue <id>`). Plain `copse` always starts fresh. `copse sessions` lists
+(`copse continue <id>`). Plain `copse` always starts fresh. If a session is still running in that folder, it asks first: open that one, start the new one in its own worktree (branch `copse/session-N`, cut from what you have checked out, so both run at once without sharing files), or pause it and start fresh. Without a terminal to ask in, it pauses the old one. `copse sessions` lists
 what's paused. copse keeps the newest 3 paused sessions per repo for up to 7 days;
 cleanup never merges anything or deletes branches, and worktrees with uncommitted
 changes are kept.
