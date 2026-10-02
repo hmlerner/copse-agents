@@ -485,6 +485,38 @@ def dismiss_sidebar(db: DB, pane: str | None) -> None:
             db.set_sidebar_pane(root_id, SIDEBAR_DISMISSED)
 
 
+def sidebar_come_home(db: DB, root_id: str, pane: str | None) -> bool:
+    """The sidebar's own safety net for the follow hooks, run from its
+    refresh loop: if it sits in a session nobody is attached to (it followed
+    the person into a worker's session and a hook was missed on the way
+    back, or failed, since hooks fail silently) while the person is attached
+    to its root's session or one of its workers', move it there. True when
+    it moved."""
+    if not pane:
+        return False
+    here = tmux.pane_session(pane)
+    if not here or tmux.session_attached(here):
+        return False
+    root = db.get_agent(root_id)
+    if root is None or root.status == "paused":
+        return False
+    sessions = []
+    root_ws = db.get_workspace(root.workspace_id)
+    if root_ws:
+        sessions.append(root_ws.tmux_session)
+    for a in db.list_agents():
+        if a.id == root_id or root_of(db, a.id) != root_id:
+            continue
+        ws = db.get_workspace(a.workspace_id)
+        if ws and ws.tmux_session not in sessions:
+            sessions.append(ws.tmux_session)
+    for name in sessions:
+        if name != here and tmux.session_attached(name):
+            sidebar_follow(db, name)
+            return tmux.pane_session(pane) == name
+    return False
+
+
 def sidebar_follow(db: DB, session: str) -> None:
     """Called from the session-window-changed / client-session-changed hooks
     tmux.apply_theme sets on every copse session: its active window just
