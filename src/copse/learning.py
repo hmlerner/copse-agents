@@ -1,24 +1,18 @@
-"""Learning plugins: let an installed plugin learn which profiles fit which tasks.
+"""Hosted learning: which profiles fit which tasks, learned by copse Pro's API.
 
-copse itself ships no learner. It reports what happened to each worker task
-(a review verdict, an escalation to the supervisor, a merge, the worktree
-removed unmerged) to a plugin, and asks the plugin to pick a profile when
-``assign``/``handoff`` get none and no milestone names one.
+Nothing is learned on this machine, and there is no plugin interface for it:
+no installed package can act as a learner. copse reports what happened to each
+worker task (a review verdict, an escalation to the supervisor, a merge, the
+worktree removed unmerged) to the hosted learner (``copse.pro.learning``), and
+asks it to pick a profile when ``assign``/``handoff`` get none and no
+milestone names one.
 
-A plugin is a Python package that registers an entry point in the
-``copse.learning`` group (loaded through ``copse.plugins``). The entry
-point's name is what the repo config's ``learning`` key selects
-(``"learning": "<name>"``; ``"off"`` loads nothing; the default ``"auto"``
-loads copse Pro's ``cloud`` learner when the entitlement includes hosted
-learning and nothing otherwise), and its object is a factory::
+The repo config's ``learning`` key is ``"auto"`` (the default: hosted learning
+when the copse Pro entitlement includes it, else off), ``"cloud"`` or
+``"off"``; any other value means off.
 
-    def make(repo_root: str) -> LearningPlugin | None
-
-called once per repo per process. Install a plugin next to copse, e.g.
-``uv tool install copse-agents --with <plugin>``.
-
-Every call into a plugin is guarded: a missing, broken or slow-to-import
-plugin never fails the review, merge or delegation it was told about.
+Every call into the learner is guarded: an unreachable or failing API never
+fails the review, merge or delegation it was told about.
 """
 
 from __future__ import annotations
@@ -33,8 +27,6 @@ from copse.config import RepoConfig
 from copse.db import DB, Agent, Workspace
 
 log = logging.getLogger(__name__)
-
-GROUP = plugins.LEARNING
 
 
 @dataclass(frozen=True)
@@ -81,14 +73,25 @@ class LearningPlugin(ABC):
         return "this learning plugin has nothing to report"
 
 
+_learners: dict[str, LearningPlugin] = {}
+
+
 def plugin(cfg: RepoConfig, repo_root: str) -> LearningPlugin | None:
-    """The plugin the repo's ``learning`` setting selects, or None when it's
-    off or not installed."""
-    return plugins.select(GROUP, cfg, repo_root)  # type: ignore[return-value]
+    """The hosted learner (copse Pro's ``CloudLearner``) when the repo's
+    ``learning`` setting resolves to ``"cloud"``, else None. Never loads an
+    installed package."""
+    if plugins.learning_name(cfg) != plugins.CLOUD:
+        return None
+    if repo_root not in _learners:
+        from copse.pro.learning import CloudLearner
+
+        _learners[repo_root] = CloudLearner(repo_root)
+    return _learners[repo_root]
 
 
-def installed() -> list[str]:
-    return plugins.installed(GROUP)
+def reset() -> None:
+    """Forget the learners made so far (tests use it)."""
+    _learners.clear()
 
 
 def _task_files(db: DB, worker: Agent, repo_root: str) -> tuple[tuple[str, ...], str | None]:
@@ -177,4 +180,4 @@ def choose(db: DB, cfg: RepoConfig, repo_root: str, task: str | None = None,
         return None
 
 
-__all__ = ["GROUP", "LearningPlugin", "Outcome", "TaskInfo", "choose", "installed", "note", "plugin"]
+__all__ = ["LearningPlugin", "Outcome", "TaskInfo", "choose", "note", "plugin", "reset"]

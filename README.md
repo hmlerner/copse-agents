@@ -303,7 +303,7 @@ your own status line prints, so what you see doesn't change.
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
 | `copse history --share [--session ID]` | a few lines about this session to paste into Slack or a post: goal, milestones verified, workers, merges, reviews (and how many by a different model), parallel speedup, tokens |
-| `copse learning [--reset]` | what the repo's learning plugin has learned (see `learning` below); `--reset` asks it to forget this repo |
+| `copse learning [--reset]` | what copse Pro's hosted learner has learned about this repo (see `learning` below; nothing is learned on your machine); `--reset` asks it to forget this repo |
 | `copse account [login\|logout\|status\|upgrade\|portal\|org]` | paid features: bare `copse account` shows what your plan has and how to get the rest (see "copse Pro and Team" below) |
 | `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
@@ -435,8 +435,8 @@ Autopilot, merge gates and cleanup:
 | `delete_merged_branches` | `true` | removing a worktree (after a merge, `copse rm`, `copse prune`, session cleanup) also deletes its branch once every commit is in its base, so finished branches don't pile up. An unmerged branch is always kept; `false` keeps them all. If GitHub keeps merged PR branches, the first `copse pr` in a repo offers to turn on its automatic deletion with your `gh` login (repo admins only) |
 | `pr_footer` | `true` | `copse pr` and `copse ci` end the PR description with one line: "🌲 Built in parallel and verified with copse" (a link). `false` leaves it out. Never added to commit messages |
 | `message_delivery` | `"pull"` | how agent and copse messages reach an interactive supervisor: `"pull"` keeps them unread and delivers one notice ("copse (16:25:03): 2 new messages (from 9f742c5c, pipeline). Call read_messages."; the time keeps Claude Code from dropping a repeat; the sidebar shows an unread count), `"push"` delivers each message's text. Messages you send (`copse send`, typing) and messages to workers are always pushed |
-| `learning` | `"auto"` | which learning plugin records how worker tasks turned out and suggests profiles (see below): `"auto"` is copse Pro's hosted learning when your plan includes it and nothing otherwise; `"off"`; or an installed plugin's name |
-| `learning_candidates` | `[]` | the profile names a learning plugin may pick from |
+| `learning` | `"auto"` | hosted learning (copse Pro, via the API; see below): `"auto"` uses it when your plan includes it and nothing otherwise; `"cloud"`; `"off"`. Any other value means off |
+| `learning_candidates` | `[]` | the profile names the hosted learner may pick from |
 | `plugins` | `{}` | which installed plugin to use per group, e.g. `{"events": "<name>", "policy": "off"}`; unset, a group uses the only plugin installed in it, except `events`, which uses every installed one (several names: `"pro, audit"`; see "Plugins" below) |
 | `routing` | see below | for each task weight (`light`, `medium`, `heavy`), the profiles `assign`/`handoff` try in order |
 | `services` | `[]` | per-worktree Docker services (copse Pro; see "Per-worktree services" below) |
@@ -482,32 +482,31 @@ keep theirs):
 
 `developer-codex` runs on Codex; `developer-heavy` on Claude Fable at high effort.
 A profile is skipped when its CLI isn't installed (`claude`, `codex`, `agy`), the
-local model server isn't answering, or its provider is at your `usage_limit`. If a
-learning plugin is selected it chooses among the profiles left; otherwise the first
+local model server isn't answering, or its provider is at your `usage_limit`. If
+hosted learning is on it chooses among the profiles left; otherwise the first
 wins. When every candidate is out, the repo's `default_agent` runs. The reply says
 what was picked and why, e.g. `weight medium -> developer (Codex at 93%, skipped developer-codex)`.
 An `agent_profile` you pass, or a milestone's `profile`, always wins over weight.
 
-**Learning plugins.** copse can hand what happens to each worker task (review
-verdicts, times the supervisor had to step in, merged or abandoned, tokens, time)
-to a learning plugin, and ask it to pick a profile from `learning_candidates` when
+**Learning is hosted only (copse Pro).** With a plan that includes it, copse
+sends a coarse summary of what happens to each worker task (review verdicts,
+times the supervisor had to step in, merged or abandoned, tokens, time) to the
+copse Pro API, and asks the API to pick a profile from `learning_candidates` when
 `assign` gets none and no milestone names one; the reply then says
 `profile chosen by learning: X`. A profile named by you or by a milestone always
-wins. The default `"learning": "auto"` uses copse Pro's hosted learner (`cloud`)
-when you're logged in to a plan that includes it, and nothing otherwise (see
-"copse Pro and Team" below). Any other plugin is a package registering a
-`copse.learning` entry point (see `copse/learning.py` for the interface),
-installed with `uv tool install copse-agents --with <plugin>` and selected with
-`"learning": "<name>"`; `"off"` turns learning off. A plugin that's missing or
-fails never breaks a review, merge or delegation.
+wins. Nothing is learned on your machine, and there is no plugin interface for
+learning: no installed package can act as a learner. The default
+`"learning": "auto"` uses the hosted learner when you're logged in to a plan that
+includes it, and nothing otherwise (see "copse Pro and Team" below); `"cloud"`
+forces it and `"off"` turns learning off. Any other value means off. If the API
+is unreachable or fails, a review, merge or delegation carries on unaffected.
 
-**Plugins.** Learning is one of four entry-point groups a package can extend
+**Plugins.** Three entry-point groups let a package extend
 copse through (`copse/plugins.py` loads them; each interface is in the module
 named):
 
 | group | interface | what copse does with it |
 |---|---|---|
-| `copse.learning` | `copse/learning.py` | records task outcomes, suggests profiles (selected with `learning`, above) |
 | `copse.events` | `copse/events.py` | is told when a task starts (`assign`/`handoff`), a reviewer decides, the supervisor is asked to step in, a branch merges or a worktree is removed: the repo, the worker's id, branch, profile, provider and model, who caused it, and when. Never a diff, a prompt or the task text |
 | `copse.policy` | `copse/policy.py` | may refuse a delegation or a merge with a reason; `assign`/`handoff` then reply "Not started: ..." and `merge_workspace` (and the pipeline) "Not merged: ..." |
 | `copse.account` | `copse/account.py` | handles `copse account ...` |
@@ -521,7 +520,7 @@ group fans out: every installed events plugin hears every event, unless
 With no plugin, every delegation and merge is allowed and nothing is reported.
 A plugin that's missing, broken or raises is logged and ignored, never failing
 what copse was doing. copse's own Pro, Team and Enterprise plugins (`pro` in
-the events, policy and account groups, `audit` in events, `cloud` in learning;
+the events, policy and account groups, `audit` in events;
 `src/copse/pro`) are always installed and do nothing until you log in to a
 plan that includes them.
 
@@ -595,8 +594,8 @@ them). With it on:
 
 * **No outbound traffic.** Every copse Pro request (login, entitlement
   refresh, key fetches, hosted learning, the team policy, the audit feed) is
-  refused before it reaches the network. Learning falls back to the local
-  learner, audit events are not recorded, and the entitlement comes from an
+  refused before it reaches the network. Learning is off (nothing is learned
+  locally), audit events are not recorded, and the entitlement comes from an
   offline license that is never refreshed.
 * **Local models only.** No agent with a hosted provider (`claude`, `codex`,
   `antigravity`, ...) is launched: not a worker, not a reviewer, not a

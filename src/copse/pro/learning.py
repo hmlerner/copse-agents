@@ -1,8 +1,9 @@
-"""The ``cloud`` learning plugin: hosted learning for copse Pro.
+"""The hosted learner client: hosted learning for copse Pro.
 
 ``"learning": "cloud"`` in a repo's ``.copse/config.json`` selects it, and
 the default ``"auto"`` selects it when the verified entitlement includes the
-``learning`` feature (see ``copse.plugins``). It answers ``suggest`` from the
+``learning`` feature (see ``copse.plugins``). It is built in, not loaded from
+an entry point. It answers ``suggest`` from the
 hosted learner and, whenever that can't be used -- no ``learning`` feature in
 the verified entitlement, offline, rate-limited, slow (more than
 ``SUGGEST_TIMEOUT``), or any error at all -- with no suggestion (None, so

@@ -418,8 +418,8 @@ def choose_profile(db: DB, caller_id: str, repo_root: str, requested: str | None
     """The worker profile for a delegation, and whether learning chose it:
     ``requested`` if given, else the first unverified milestone's profile in
     the caller's session, else the repo's routing for ``weight`` (available
-    candidates only, a learning plugin choosing among them), else a learning
-    plugin's pick among ``learning_candidates``, else the repo's
+    candidates only, the hosted learner choosing among them), else the hosted
+    learner's pick among ``learning_candidates``, else the repo's
     ``default_agent``. Raises AutopilotError if it doesn't exist. An
     explanation of a routed pick is appended to ``why``."""
     name = (requested or "").strip()
