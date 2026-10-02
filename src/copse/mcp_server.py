@@ -386,7 +386,10 @@ def send_message(to_agent_id: str, message: str) -> str:
     """Send a message to another agent. It's delivered when that agent is idle."""
     db = DB()
     caller, _ = _caller(db)
-    return agents.send_message(db, to_agent_id, message, caller.id if caller else None)
+    try:
+        return agents.send_message(db, to_agent_id, message, caller.id if caller else None)
+    except (agents.AgentError, KeyError) as e:
+        return f"Not sent: {str(e).strip(chr(39))}"
 
 
 @mcp.tool()

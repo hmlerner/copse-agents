@@ -200,8 +200,10 @@ def auto_mode_note(a, ws) -> str:
         return ""
     if (mode or "").lower() != "auto":
         return ""
-    return (" Its profile runs in Claude Code's auto mode, which should have handled an ordinary "
-            "command itself, so auto mode is probably switched off in that session: run "
+    return (" Its profile runs in Claude Code's auto mode. Auto mode still asks about some "
+            "actions on purpose (working outside the project, such as entering another worktree, "
+            "or a command its classifier declined); the screen below shows which prompt it is. "
+            "If it's an ordinary command, auto mode is probably switched off in that session: run "
             "`claude --permission-mode auto` once yourself to see whether Claude Code has a notice "
             "to acknowledge, and check your Claude Code settings and usage limit.")
 

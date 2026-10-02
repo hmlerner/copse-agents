@@ -103,7 +103,8 @@ PERMISSION_GUIDANCE = (
     "Permissions: commands are pre-approved by their first words, so run them plainly and "
     "one at a time from your own worktree (no `cd`, no `&&`, no pipes, no `VAR=x` prefixes). "
     "Never `cd` into or read from the main checkout ({root}): it isn't yours, and it "
-    "pauses you for approval. Write files with your Edit and Write tools, never with "
+    "pauses you for approval. This worktree is already your isolated copy: don't create "
+    "or enter another one (no EnterWorktree, no `git worktree add`). Write files with your Edit and Write tools, never with "
     "shell heredocs or scripts, and don't write to /tmp."
 )
 
@@ -923,6 +924,19 @@ def ended(db: DB, agent_id: str) -> None:
     pause(db, agent_id)
 
 
+def attach_target(db: DB, ws: Workspace) -> str | None:
+    """The pane `copse attach <workspace>` should open: the live agent there
+    that needs someone (waiting on a prompt), else the busiest, else the
+    newest. None when no agent runs there. Never the session's placeholder
+    shell window, which is what tmux would show otherwise."""
+    live = [a for a in db.list_agents(ws.id)
+            if a.tmux_window and a.dismissed_at is None and is_alive(a)]
+    if not live:
+        return None
+    rank = {"waiting": 0, "processing": 1, "starting": 2}
+    return min(reversed(live), key=lambda a: rank.get(a.status, 3)).tmux_window
+
+
 def find_running(db: DB, ws: Workspace, profile: str) -> Agent | None:
     """The newest live interactive agent of ``profile`` in ``ws``, if any."""
     for a in reversed(db.list_agents(ws.id)):
@@ -1070,6 +1084,9 @@ def _send_message(db: DB, agent: Agent, body: str, sender_id: str | None) -> str
             f"subagent in the same worktree; then record the outcome with complete_subagent."
         )
     if not is_alive(agent):
+        if agent.status == "paused":
+            raise AgentError(f"agent {agent.id} is paused, so it can't take messages. The person "
+                             "can resume its session with `copse continue`; the message isn't kept.")
         raise AgentError(f"agent {agent.id} is not running")
     provider = get_provider(agent.provider)
     text = format_message(db, body, sender_id)

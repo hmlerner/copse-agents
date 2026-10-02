@@ -151,3 +151,20 @@ def test_dropping_a_session_still_closes_its_own_leftover_window(db, root):
     db.update_agent("old", tmux_window=pane)
     sessions.enforce(db, root.repo_root, now=2100)
     assert not tmux.window_alive(pane)
+
+
+def test_sessions_cmd_lists_a_session_with_workers(db, root, repo, monkeypatch):
+    # Issue #34: a paused session with workers crashed `copse sessions`
+    # (workspaces went into a set, and Workspace isn't hashable).
+    from typer.testing import CliRunner
+
+    from copse.cli import app
+
+    sup = add(db, root, "sup")
+    ws = workspaces.create(db, str(repo), "feat/x").workspace
+    add(db, ws, "w1", mode="assign", parent=sup.id)
+    add(db, ws, "r1", mode="review", parent=sup.id)     # shares the worker's workspace
+    monkeypatch.chdir(repo)
+    res = CliRunner().invoke(app, ["sessions"])
+    assert res.exit_code == 0, res.output
+    assert "MB in worktrees" in res.output
