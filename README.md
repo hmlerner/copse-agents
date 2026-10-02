@@ -302,7 +302,7 @@ your own status line prints, so what you see doesn't change.
 | `copse account [login\|logout\|status\|upgrade\|portal\|org]` | paid features: bare `copse account` shows what your plan has and how to get the rest (see "copse Pro and Team" below) |
 | `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |
-| `copse attach / cd / open [WS]` | tmux session / path / editor |
+| `copse attach / cd / open [WS]` | tmux session (at the agent waiting on you, else the busiest or newest) / path / editor |
 | `copse status / diff [--stat] [WS]` | compared with the base branch (committed + uncommitted) |
 | `copse sync [--merge] [WS]` | rebase (or merge) the latest base into the branch |
 | `copse commit / push / pr [WS]` | commit everything (`-m MSG`), push with upstream, open a PR |
