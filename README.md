@@ -303,7 +303,7 @@ your own status line prints, so what you see doesn't change.
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
 | `copse history --share [--session ID]` | a few lines about this session to paste into Slack or a post: goal, milestones verified, workers, merges, reviews (and how many by a different model), parallel speedup, tokens |
-| `copse learning [--reset]` | what copse Pro's hosted learner has learned about this repo (see `learning` below; nothing is learned on your machine); `--reset` asks it to forget this repo |
+| `copse learning` | whether copse Pro's hosted learning is on for this repo, and if not, why (nothing is learned on your machine) |
 | `copse account [login\|logout\|status\|upgrade\|portal\|org]` | paid features: bare `copse account` shows what your plan has and how to get the rest (see "copse Pro and Team" below) |
 | `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
 | `copse watch [--all] [--once]` | the dashboard on its own (the same view as the sidebar): enter attaches, `p` peeks, `x` closes |

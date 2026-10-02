@@ -459,8 +459,10 @@ def prune() -> None:
     scratch sessions with nothing left to transfer. Removes the worktrees of
     finished workers whose branch is already merged, copse tmux sessions that
     only hold idle shells and no running agent, leftover copse tmux servers,
-    stale locks and empty worktree folders. Never merges or deletes branches;
-    worktrees with uncommitted changes stay."""
+    stale locks and empty worktree folders. A removed worktree's branch goes
+    too once fully merged (unless delete_merged_branches is false); nothing is
+    merged, unmerged branches are kept, and worktrees with uncommitted changes
+    stay."""
     from copse import sessions
 
     db = DB()
@@ -806,9 +808,7 @@ def history(
 
 
 @app.command()
-def learning(
-    reset: bool = typer.Option(False, "--reset", help="Ask the hosted learner to forget this repo."),
-) -> None:
+def learning() -> None:
     """What copse Pro's hosted learner has learned about which profiles fit which tasks (nothing is learned on this machine)."""
     from copse import learning as learning_mod
     from copse.config import load_repo_config
@@ -839,7 +839,7 @@ def learning(
     if p is None:
         typer.echo("hosted learning is unavailable")
         raise typer.Exit(1)
-    typer.echo(p.report(reset=reset))
+    typer.echo(p.report())
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
