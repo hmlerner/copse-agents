@@ -386,7 +386,7 @@ def adopt_root(db: DB, repo_path: str) -> Workspace:
     top = git.toplevel(repo_path)
     existing = db.workspace_by_path(top)
     if existing:
-        return existing
+        return refresh_branch(db, existing)
     repo_root = git.main_repo_root(repo_path)
     cfg = load_repo_config(repo_root)
     branch = git.current_branch(top) or "HEAD"

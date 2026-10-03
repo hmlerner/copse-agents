@@ -361,19 +361,19 @@ CLI_FOR_PROVIDER = {"claude": "claude", "codex": "codex", "antigravity": "agy"}
 
 
 def _unavailable(name: str, cfg: RepoConfig, repo_root: str) -> str | None:
-    """Why routing skips profile ``name`` (its CLI isn't installed, its
-    provider is out of headroom, it doesn't exist), or None if it's usable."""
-    import shutil
-
+    """Why routing skips profile ``name`` (its CLI isn't installed or
+    signed in, its provider is out of headroom, it doesn't exist), or None if it's usable."""
     from copse import quota
+    from copse.providers import signed_out, unusable
 
     try:
         p = load_profile(name, repo_root)
     except KeyError:
         return f"no profile {name}"
     cli = CLI_FOR_PROVIDER.get(p.provider)
-    if cli and shutil.which(cli) is None:
-        return f"{cli} isn't installed, skipped {name}"
+    if cli and unusable(p.provider):
+        return (f"{cli} isn't signed in, skipped {name}" if signed_out(p.provider)
+                else f"{cli} isn't installed, skipped {name}")
     if p.provider in quota.PROVIDERS:
         room = quota.headroom(p.provider, cfg, repo_root)
         if room <= 100 - cfg.usage_limit:

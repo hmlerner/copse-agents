@@ -112,6 +112,21 @@ def push_messages(monkeypatch):
     monkeypatch.setattr(agents, "pulls_messages", lambda db, agent: False)
 
 
+@pytest.fixture(autouse=True)
+def cli_sign_in_unknown(monkeypatch):
+    """No test asks the real claude or codex whether they're signed in (the
+    temporary CLAUDE_CONFIG_DIR would say no); tests/test_signin.py fakes it."""
+    from copse import providers
+
+    from copse import antigravity
+
+    monkeypatch.setattr(providers, "_auth_probe", lambda argv: None)
+    monkeypatch.setattr(providers, "_SIGNED_IN", {})
+    # Only what a test puts on PATH counts as installed, not an app's own copy.
+    monkeypatch.setattr(providers, "CODEX_BUNDLED", "/nonexistent/codex")
+    monkeypatch.setattr(antigravity, "BUNDLED", "/nonexistent/agy")
+
+
 @pytest.fixture
 def db(copse_home):
     return DB()

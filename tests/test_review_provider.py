@@ -51,7 +51,12 @@ def capture_profile(monkeypatch):
 
 
 def codex_present(monkeypatch, present: bool):
-    monkeypatch.setattr(agents.shutil, "which", lambda name: ("/usr/bin/codex" if present and name == "codex" else None))
+    # Like a PATH with claude, and codex when ``present``: a name or the
+    # path it resolved to both count.
+    def which(name):
+        base = name.rsplit("/", 1)[-1]
+        return f"/usr/bin/{base}" if base == "claude" or (present and base == "codex") else None
+    monkeypatch.setattr(agents.shutil, "which", which)
     monkeypatch.setattr(agents, "_local_reviewer_available", lambda: False)  # never probe a live endpoint
 
 

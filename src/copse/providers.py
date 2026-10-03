@@ -525,6 +525,89 @@ def codex_binary() -> str:
     return shutil.which("codex") or (CODEX_BUNDLED if os.path.exists(CODEX_BUNDLED) else "codex")
 
 
+
+# Signed in, by provider, and when that was seen: a positive answer is kept a
+# while (a long-lived MCP server launches many agents); a negative one isn't,
+# so signing in takes effect on the next try.
+_SIGNED_IN: dict[str, float] = {}
+SIGNED_IN_TTL = 600
+
+# Credentials a CLI takes from the environment instead of its own login.
+_ENV_AUTH = {
+    "claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+               "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"),
+    "codex": ("OPENAI_API_KEY", "CODEX_API_KEY"),
+}
+
+
+def _auth_probe(argv: list[str]) -> tuple[int, str] | None:
+    import subprocess
+
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=10,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.returncode, (out.stdout or "") + (out.stderr or "")
+
+
+def signed_out(provider: str) -> str | None:
+    """Why ``provider``'s CLI can't run an agent because it isn't signed in,
+    or None when it is, or when that can't be told (no status command, an
+    older CLI, credentials from the environment): only a definite "not
+    signed in" stops a launch. Without this check a signed-out CLI opens on
+    its login screen, and the prompt copse types in lands there."""
+    if any(os.environ.get(k) for k in _ENV_AUTH.get(provider, ())):
+        return None
+    seen = _SIGNED_IN.get(provider)
+    if seen and time.time() - seen < SIGNED_IN_TTL:
+        return None
+    reason = None
+    if provider == "claude":
+        res = _auth_probe([claude_binary(), "auth", "status"])
+        if res:
+            try:
+                data = json.loads(res[1])
+            except ValueError:
+                data = None
+            if isinstance(data, dict) and data.get("loggedIn") is False:
+                reason = ("Claude Code isn't signed in: run `claude auth login` "
+                          "(or start `claude` and log in), then try again")
+    elif provider == "codex":
+        res = _auth_probe([codex_binary(), "login", "status"])
+        if res and res[0] != 0 and "not logged in" in res[1].lower():
+            reason = "Codex isn't signed in: run `codex login`, then try again"
+    else:
+        return None
+    if reason is None and res is not None:
+        _SIGNED_IN[provider] = time.time()
+    return reason
+
+
+# CLIs that can run a supervisor chat: copse's tools over MCP, a status
+# copse can read, and a way to tell autopilot a turn ended. The native loop
+# has only the worker tools, and a subagent runs inside a supervisor. (A
+# shell is allowed, as a stand-in for testing copse itself.)
+SUPERVISOR_PROVIDERS = ("claude", "codex", "antigravity")
+NOT_SUPERVISOR = ("native", "subagent")
+
+
+def unusable(provider: str) -> str | None:
+    """Why ``provider`` can't run an agent here (its CLI isn't installed or
+    isn't signed in), or None. Profiles on such a provider aren't offered."""
+    import shutil
+
+    from copse import antigravity
+
+    binary = {"claude": claude_binary, "codex": codex_binary,
+              "antigravity": antigravity.binary}.get(provider)
+    if binary:
+        exe = binary()
+        if not (shutil.which(exe) or os.path.isfile(exe)):
+            return f"{exe} isn't installed"
+    return signed_out(provider)
+
+
 class Codex(Provider):
     name = "codex"
     # Status comes from Codex's `notify` command (turn complete); it has no

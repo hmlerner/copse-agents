@@ -829,6 +829,28 @@ checks, only `Edit(path)` rules are, and an `Edit` rule covers every file-editin
 tool. So write `Edit(docs/**)`, not `Write(docs/**)`, to let a worker create and
 change files under a directory without prompts.
 
+### Which provider can do what
+
+| Provider | Supervisor (`copse --provider …`) | Worker / reviewer |
+|---|---|---|
+| `claude` (Claude Code) | yes (the default) | yes |
+| `codex` | yes | yes |
+| `antigravity` (`agy`) | yes | yes |
+| `native` (local models) | no: its loop has only the worker tools (report, message, diff), not `assign` or `handoff` | yes |
+| `subagent` | no: it runs inside a supervisor's own Agent tool | yes, through `assign`/`handoff` |
+| `shell` | only as a stand-in, for testing copse itself | a plain shell, for dev servers and testing copse |
+
+copse only offers a profile whose CLI is installed and signed in. A profile on a
+CLI that isn't signed in is left out of the supervisor's profile list and of
+routing by weight, and naming it directly stops with how to sign in
+(`claude auth login`, `codex login`) instead of opening the CLI's login screen.
+`copse doctor` shows each CLI's sign-in. Keys set in the environment
+(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and the like) count as signed in.
+`agy` has no sign-in status command, so copse can't tell when it's signed out:
+sign in once by running `agy` yourself. A worker that no hook reports on (Codex)
+and that shows nothing new for 10 minutes without reporting, for example because
+it's signed in without a plan that includes it, is reported to its supervisor.
+
 ### Cheap workers
 
 By default a Claude Code worker loads everything your own `claude` does: your
@@ -1048,7 +1070,9 @@ Claude itself behind a gateway.
 
 Codex agents report status through Codex's `notify` hook (copse passes
 `-c notify=[...]` at launch, leaving your own Codex config alone): a completed turn
-marks the agent idle and delivers any queued message.
+marks the agent idle and delivers any queued message. Codex has no Stop hook, so for
+an autopilot supervisor on Codex that turn end is also where copse tells it to keep
+going, with the same limit on reminders as Claude Code.
 
 ## Google Antigravity
 

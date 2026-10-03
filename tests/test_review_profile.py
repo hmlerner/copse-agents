@@ -19,7 +19,7 @@ def worker(provider="claude"):
 def which(monkeypatch):
     """Control whether codex is on PATH."""
     state = {"codex": False}
-    monkeypatch.setattr(shutil, "which", lambda name: "/bin/codex" if state["codex"] and name == "codex" else None)
+    monkeypatch.setattr(shutil, "which", lambda name: name if state["codex"] and name.endswith("codex") else None)
     return state
 
 

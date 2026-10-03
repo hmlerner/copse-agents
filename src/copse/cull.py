@@ -122,8 +122,9 @@ def sweep(db: DB, now: float | None = None) -> list[str]:
             done.append(f"closed {'idle' if finished else 'stopped'} worker {a.id} "
                         f"after {int(idle_for // 60)} min")
 
-    # 3. Workers stuck on a prompt nobody is answering.
+    # 3. Workers stuck on a prompt nobody is answering, or gone silent.
     done.extend(note_stuck(db, now, panes))
+    done.extend(note_silent(db, now, panes))
 
     # 4. Sidebar locks of sessions that are over.
     removed = clean_locks(db, now)
@@ -181,6 +182,49 @@ def note_stuck(db: DB, now: float, panes: dict[str, bool]) -> list[str]:
             continue  # its supervisor isn't running; try again on a later sweep
         db.update_agent(a.id, stuck_noted=since)
         done.append(f"told {a.parent_id} that worker {a.id} is stuck on a prompt")
+    return done
+
+
+# How long a worker no hook reports on (Codex) may show nothing new before its
+# supervisor is told. Such a CLI can sit on a startup error forever: signed in
+# without a plan that includes it, say (issue #42).
+SILENT_AFTER = 600.0
+
+
+def note_silent(db: DB, now: float, panes: dict[str, bool]) -> list[str]:
+    """Tell each supervisor, once per silence, about a worker whose status
+    no hook reports ('unknown') or that never got past 'starting', and whose
+    pane hasn't printed anything for SILENT_AFTER seconds without a result."""
+    done = []
+    owners = agents.pane_owners(db, panes)
+    for a in db.list_agents():
+        if (a.mode not in agents.REPORTING_MODES or not a.parent_id or a.result is not None
+                or a.dismissed_at is not None or a.status not in ("unknown", "starting")
+                or not agents.runs_process(a) or not agents.is_alive(a, panes)
+                or not agents.owns_pane(db, a, owners)):
+            continue
+        last = tmux.window_activity(a.tmux_window) or a.created_at
+        if now - last < SILENT_AFTER or a.stuck_noted == last:
+            continue
+        ws = db.get_workspace(a.workspace_id)
+        try:
+            screen = tmux.capture(a.tmux_window, lines=40)
+        except tmux.TmuxError:
+            screen = ""
+        tail = "\n".join([ln for ln in screen.rstrip().splitlines() if ln.strip()][-12:])
+        where = f" on branch `{ws.branch}`" if ws else ""
+        look = f"Look with `copse attach {ws.name}`, or" if ws else "Look at its pane, or"
+        body = (f"Worker {a.id} ({a.profile}, {a.provider}){where} has shown nothing new for "
+                f"{int((now - last) // 60)} min and hasn't reported. Its CLI may be stuck at "
+                f"startup (for example signed in without a plan that includes it). {look} "
+                "cancel it and assign the task to another profile."
+                f"\n\nIts screen:\n{tail}")
+        try:
+            agents.send_message(db, a.parent_id, body, sender_id=a.id)
+        except agents.AgentError:
+            continue
+        db.update_agent(a.id, stuck_noted=last)
+        done.append(f"told {a.parent_id} that worker {a.id} has gone silent")
     return done
 
 
