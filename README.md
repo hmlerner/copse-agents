@@ -576,10 +576,13 @@ doesn't say which tool run followed which prompt, so copse doesn't learn from
 Codex approvals. To undo, delete that entry (or untrust it in Codex's `/hooks`).
 
 **Antigravity.** agy's hook can deny but its "allow" is ignored (an agy bug),
-so the hook answers deny or ask, and copse copies the rules agy can express
-exactly into your `~/.gemini/antigravity-cli/settings.json` `permissions`
-(allows to `allow`: your checks and `git status/diff/log/show` as exact
-commands, your own exact rules; denies to `deny`). It adds only entries that
+and it has no "no opinion" answer. So the hook denies what the policy denies,
+answers "allow" for a file inside the workspace (which agy reads and writes
+without asking anyway) and "ask" for everything else, and copse copies the
+rules agy can express exactly into your `~/.gemini/antigravity-cli/settings.json`
+`permissions` (allows to `allow`: `git status/diff/log/show` as exact commands
+and your own exact rules, but not a repo's checks, since agy's settings apply in
+every project; denies to `deny`). It adds only entries that
 weren't there, remembers which ones in `~/.copse/permissions.json`, never
 touches anything else, and keeps your original file once as
 `settings.json.copse-backup`. It syncs when an agy worker starts and after

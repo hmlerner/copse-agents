@@ -396,11 +396,21 @@ def from_agy(payload: dict, worktree: str = "", repo_root: str = "") -> Request 
     return Request("antigravity", kind, tool, cwd, worktree, repo_root, command, path, url)
 
 
-def agy_output(decision: Decision | None) -> dict:
-    """What agy's PreToolUse hook prints: deny, or ask (which leaves it to
-    agy's own settings and prompt). Never empty: agy reads that as deny."""
+def agy_output(decision: Decision | None, req: Request | None = None,
+               workspaces: list[str] | None = None) -> dict:
+    """What agy's PreToolUse hook prints. Never empty: agy reads that as deny.
+
+    A deny is a deny. Otherwise copse answers what agy would do on its own,
+    since agy has no "no opinion": "allow" for reading or writing a file
+    inside one of its workspaces (agy does that without asking), else "ask"
+    (agy prompts unless its own allow rules cover the call). agy currently
+    ignores a hook's "allow" (google-antigravity/antigravity-cli#1053); once
+    it doesn't, this still allows nothing agy wouldn't by default."""
     if decision is not None and decision.decision == "deny":
         return {"decision": "deny", "reason": f"copse: {decision.reason}"}
+    if (req is not None and req.kind in ("read", "write", "edit") and req.path
+            and any(_inside(os.path.realpath(req.path), w) for w in workspaces or [])):
+        return {"decision": "allow", "reason": "copse: a file in the workspace (agy's default)"}
     why = decision.reason if decision is not None else "no decision"
     return {"decision": "ask", "reason": f"copse: {why}"}
 

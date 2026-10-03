@@ -327,9 +327,36 @@ def test_agy_install_adds_the_pre_tool_hook_only_with_the_policy(ws, monkeypatch
     antigravity.install(ws.path, permission_policy=True)
     hooks = json.loads(open(os.path.join(ws.path, ".agents", "hooks.json")).read())["copse"]
     [entry] = hooks["PreToolUse"]
-    # Only shell commands: agy's "ask" would add a prompt to tools it runs
-    # without asking (view_file, list_dir, ...).
-    assert entry["matcher"] == "run_command" and "agy-pre-tool" in entry["hooks"][0]["command"]
+    # File and web tools too, so every deny applies to them.
+    for tool in ("run_command", "view_file", "write_to_file", "read_url_content", "call_mcp_tool"):
+        assert tool in entry["matcher"].split("|")
+    assert "agy-pre-tool" in entry["hooks"][0]["command"]
+
+
+def test_agy_pre_tool_answers_what_agy_would_do_except_a_deny(db, ws, monkeypatch, tmp_path):
+    # agy reads and writes files in its workspace without asking, and its
+    # "ask" would add a prompt there; so inside the workspace copse answers
+    # allow (agy's default), a deny anywhere, and ask for anything else.
+    a = worker(db, ws, provider="antigravity", id_="g1")
+    turn_on(ws)
+    monkeypatch.setenv("COPSE_AGENT_ID", a.id)
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("x")
+    os.symlink(outside, os.path.join(ws.path, "link.txt"))
+    with open(os.path.join(ws.path, ".env"), "w") as f:
+        f.write("SECRET=1\n")
+
+    def answer(tool, args):
+        stdin = json.dumps(agy_payload(tool, args, ws.path))
+        return json.loads(antigravity.pre_tool_main(stdin, db_factory=lambda: db))["decision"]
+
+    assert answer("view_file", {"AbsolutePath": os.path.join(ws.path, "app.py")}) == "allow"
+    assert answer("write_to_file", {"TargetFile": "notes.md"}) == "allow"
+    assert answer("view_file", {"AbsolutePath": os.path.join(ws.path, ".env")}) == "deny"
+    assert answer("view_file", {"AbsolutePath": str(outside)}) == "ask"
+    assert answer("view_file", {"AbsolutePath": os.path.join(ws.path, "link.txt")}) == "ask"
+    assert answer("read_url_content", {"Url": "https://example.com"}) == "ask"
+    assert answer("run_command", {"CommandLine": "git status"}) == "ask"
 
 
 # -- agy: mirroring copse's rules into its settings --------------------------------------------
