@@ -865,6 +865,7 @@ def permissions_accept(rule_id: str = typer.Argument(..., metavar="ID")) -> None
         typer.echo(f"no suggestion {rule_id} (see `copse permissions suggestions`)")
         raise typer.Exit(1)
     typer.echo(f"{rule.id}: allow {rule.describe()} (learned)")
+    _resync_agy()
 
 
 def _add_permission_rule(decision: str, kind: str, match: str, prefix: bool, glob: bool) -> None:
@@ -879,6 +880,7 @@ def _add_permission_rule(decision: str, kind: str, match: str, prefix: bool, glo
         typer.echo(str(e))
         raise typer.Exit(2)
     typer.echo(f"{rule.id}: {decision} {rule.describe()}")
+    _resync_agy()
 
 
 _KIND_HELP = "read, write, edit, bash, fetch, mcp or other."
@@ -916,6 +918,7 @@ def permissions_forget(rule_id: str = typer.Argument(..., metavar="ID")) -> None
         typer.echo(f"no rule or suggestion {rule_id} of yours (built-in and repo rules can't be forgotten)")
         raise typer.Exit(1)
     typer.echo(f"forgot {gone}")
+    _resync_agy()
 
 
 @permissions_app.command("reset")
@@ -928,6 +931,84 @@ def permissions_reset(yes: bool = typer.Option(False, "--yes", "-y", help="Don't
                       default=False, abort=True)
     perms.reset()
     typer.echo("permission rules reset to the defaults")
+    _resync_agy()
+
+
+def _resync_agy() -> None:
+    """Keep the copy of copse's rules in agy's settings current (only if copse keeps one)."""
+    from copse import antigravity
+
+    antigravity.resync_permissions()
+
+
+@permissions_app.command("sync-agy")
+def permissions_sync_agy() -> None:
+    """Mirror your rules into Antigravity's settings (~/.gemini/antigravity-cli/settings.json).
+
+    agy ignores a hook's "allow", so copse adds the allow rules agy can express to
+    its "permissions.allow" (and denies to "deny"), and changes only entries it added.
+    Run in a repo: it counts as on or off by that repo's permission_policy; with
+    every repo off, copse's entries are removed."""
+    from copse import antigravity
+    from copse.config import load_repo_config
+
+    repo = _here_repo()
+    cfg = load_repo_config(repo) if repo else None
+    try:
+        if cfg is None:
+            added, removed = antigravity.sync_permissions()
+        else:
+            on = cfg.permission_policy == "on"
+            added, removed = antigravity.sync_permissions(repo, on=on, checks=list(cfg.checks or []))
+    except antigravity.SettingsError as e:
+        typer.echo(str(e))
+        raise typer.Exit(1)
+    path = antigravity.settings_path()
+    for e in added:
+        typer.echo(f"+ {e}")
+    for e in removed:
+        typer.echo(f"- {e}")
+    typer.echo(f"{path}: {len(added)} added, {len(removed)} removed"
+               if added or removed else f"{path}: already in sync")
+
+
+@permissions_app.command("install-codex-hook")
+def permissions_install_codex_hook(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Make the change (without it, only show it)."),
+) -> None:
+    """Trust copse's Codex permission hook once, for every worktree.
+
+    Codex runs a hook only once you've trusted it. copse passes its hook to the
+    Codex agents it starts (only when permission_policy is on), with the same
+    command for every agent, so trusting it once covers them all. This records
+    that trust in Codex's config.toml (hooks.state), through Codex itself."""
+    from copse import codex_hook
+    from copse.providers import codex_binary
+
+    binary = codex_binary()
+    try:
+        state = codex_hook.inspect(binary)
+    except codex_hook.CodexHookError as e:
+        typer.echo(f"couldn't ask Codex about the hook: {e}")
+        raise typer.Exit(1)
+    typer.echo(f"hook command: {state.command}")
+    if state.status == "trusted" and codex_hook.trusted(state.command):
+        typer.echo("already trusted; nothing to change")
+        return
+    typer.echo(f"Codex reports it as: {state.status}")
+    typer.echo(f"will set in {state.config}:")
+    typer.echo(f'  [hooks.state."{state.key}"]')
+    typer.echo(f'  trusted_hash = "{state.hash}"')
+    typer.echo("and remember it in ~/.copse/permissions.json (codex_hook)")
+    if not yes:
+        typer.echo("nothing changed; run again with --yes to trust it")
+        return
+    try:
+        codex_hook.trust(binary, state)
+    except codex_hook.CodexHookError as e:
+        typer.echo(f"couldn't record the trust: {e}")
+        raise typer.Exit(1)
+    typer.echo("trusted: Codex workers get copse's permission hook while permission_policy is on")
 
 
 @app.command()
@@ -1441,6 +1522,16 @@ def ci_init(
 @app.command("_hook", hidden=True)
 def hook(event: str, agent: Optional[str] = typer.Option(None, "--agent"),
          payload: Optional[str] = typer.Argument(None)) -> None:
+    if event == "agy-pre-tool":
+        # agy reads no answer as deny, so this always prints one (ask on any failure).
+        from copse import antigravity
+
+        try:
+            text = sys.stdin.read()
+        except Exception:  # noqa: BLE001
+            text = ""
+        typer.echo(antigravity.pre_tool_main(text))
+        return
     if event.startswith("agy-"):
         from copse import antigravity
 
@@ -1448,12 +1539,21 @@ def hook(event: str, agent: Optional[str] = typer.Option(None, "--agent"),
         return
     # --agent is baked into the hook command at launch; the environment is
     # only a fallback for sessions launched by an older copse (and may be stale).
+    # Codex's permission hook is the same command for every agent (so one
+    # trust covers them all): Codex passes the agent's environment through.
     agent_id = agent or os.environ.get("COPSE_AGENT_ID")
+    if not agent_id and event == "codex-permission-request":
+        try:
+            from copse import antigravity
+
+            agent_id = antigravity.agent_from_parent()
+        except Exception:  # noqa: BLE001
+            agent_id = None
     if not agent_id:
         return
     # Codex's notify passes the JSON as an argument; Claude Code's hooks use stdin.
     text = payload if payload is not None else sys.stdin.read()
-    if event == "permission-request":
+    if event in agents.PERMISSION_EVENTS:
         try:  # any failure means no output: the person is asked as usual
             out = agents.hook_main(DB(), agent_id, event, text, trusted=agent is not None)
         except Exception:  # noqa: BLE001

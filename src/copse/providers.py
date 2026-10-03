@@ -636,6 +636,12 @@ class Codex(Provider):
             "-c", 'mcp_servers.copse.default_tools_approval_mode="approve"',
             "-c", f"notify={json.dumps(notify)}",
         ]
+        # copse's permission policy, when it's on and the person has trusted
+        # copse's hook once (`copse permissions install-codex-hook`; see
+        # copse.codex_hook). Otherwise Codex prompts as usual.
+        from copse import codex_hook
+
+        argv += codex_hook.launch_flags(ctx.cwd)
         if ctx.profile.model:
             argv += ["--model", ctx.profile.model]
         # Codex has no system-prompt flag; lead the first message with the profile.
@@ -692,7 +698,9 @@ class Antigravity(Provider):
         from copse import antigravity
 
         if ctx.cwd:
-            antigravity.install(ctx.cwd)
+            policy = antigravity.policy_on(ctx.cwd)
+            antigravity.install(ctx.cwd, permission_policy=bool(policy))
+            antigravity.sync_for_launch(ctx.cwd, policy)
         argv = [antigravity.binary()]
         if ctx.profile.model:
             argv += ["--model", ctx.profile.model]

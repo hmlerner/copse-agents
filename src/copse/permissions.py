@@ -3,8 +3,9 @@ the structured request the agent CLI hands its hook (tool name and input),
 never from the terminal.
 
 Provider-neutral core. A provider's hook turns its own payload into a
-``Request`` (``from_claude`` for Claude Code's ``PermissionRequest`` hook;
-Codex and Antigravity adapters slot in beside it) and calls ``decide``, which
+``Request`` (``from_claude`` for Claude Code's ``PermissionRequest`` hook,
+``from_codex`` for Codex's, ``from_agy`` for Antigravity's ``PreToolUse``) and
+calls ``decide``, which
 returns ``allow``, ``deny`` or ``ask`` with a reason. ``ask`` means "no
 decision": the CLI shows its normal prompt to the person.
 
@@ -229,6 +230,166 @@ def claude_output(decision: Decision) -> dict | None:
     }}
 
 
+# -- providers: Codex -------------------------------------------------------------------------
+#
+# Codex's PermissionRequest hook (see copse.codex_hook for how it's installed)
+# gets {session_id, turn_id, cwd, tool_name, tool_input, ...}: tool_name is
+# "Bash", "apply_patch" or "mcp__<server>__<tool>", and both Bash and
+# apply_patch carry their text in tool_input.command. It has no tool_use_id,
+# so an asked request can't be paired with the PostToolUse that follows it:
+# copse doesn't learn from Codex approvals.
+
+CODEX_PATCH_FILE = re.compile(r"^\*\*\* (Add|Update|Delete) File: (.+?)\s*$", re.M)
+CODEX_PATCH_MOVE = re.compile(r"^\*\*\* Move to: (.+?)\s*$", re.M)
+CODEX_PATCH_KINDS = {"Add": "write", "Update": "edit", "Delete": "write"}
+
+
+def _abs_path(raw: str, cwd: str) -> str:
+    raw = os.path.expanduser(raw)
+    return raw if os.path.isabs(raw) else os.path.join(cwd or os.getcwd(), raw)
+
+
+def _codex_text(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+        return shlex.join(value)
+    return None
+
+
+def from_codex(payload: dict, worktree: str = "", repo_root: str = "") -> list[Request] | None:
+    """Codex's PermissionRequest payload as Requests: one, or one per file an
+    apply_patch touches; None when it names no tool."""
+    tool = payload.get("tool_name")
+    if not isinstance(tool, str) or not tool:
+        return None
+    ti = payload.get("tool_input")
+    cwd = str(payload.get("cwd") or worktree or "")
+    base = dict(provider="codex", tool=tool, cwd=cwd, worktree=worktree, repo_root=repo_root)
+    if tool.startswith("mcp__"):
+        return [Request(kind="mcp", **base)]
+    command = _codex_text(ti.get("command") if isinstance(ti, dict) else ti)
+    if tool == "Bash":
+        return [Request(kind="bash", command=command, **base)]
+    if tool == "apply_patch":
+        patch = command
+        if isinstance(ti, dict) and isinstance(ti.get("command"), list) and ti["command"]:
+            patch = ti["command"][-1] if isinstance(ti["command"][-1], str) else None
+        files = [(CODEX_PATCH_KINDS[m.group(1)], m.group(2)) for m in CODEX_PATCH_FILE.finditer(patch or "")]
+        files += [("write", m.group(1)) for m in CODEX_PATCH_MOVE.finditer(patch or "")]
+        if not files:
+            return [Request(kind="edit", **base)]  # no path: ask
+        out = list(dict.fromkeys((k, _abs_path(f, cwd)) for k, f in files))
+        return [Request(kind=k, path=path, **base) for k, path in out]
+    return [Request(kind="other", **base)]
+
+
+def decide_all(reqs: list[Request] | None, *, checks: list[str] | None = None,
+               rules: list[Rule] | None = None) -> Decision:
+    """One answer for several requests (an apply_patch touching several
+    files): deny if any is denied, allow only if every one is allowed, else ask."""
+    if not reqs:
+        return Decision("ask", "copse couldn't read the request")
+    decisions = [decide(r, checks=checks, rules=rules) for r in reqs]
+    for d in decisions:
+        if d.decision == "deny":
+            return d
+    if all(d.decision == "allow" for d in decisions):
+        if len(decisions) == 1:
+            return decisions[0]
+        return Decision("allow", f"every one of {len(decisions)} files is allowed")
+    return next(d for d in decisions if d.decision == "ask")
+
+
+def codex_output(decision: Decision) -> dict | None:
+    """What Codex's PermissionRequest hook prints; None (no output) for ask.
+    Codex's schema requires hookEventName and fails closed on unknown fields."""
+    if decision.decision == "allow":
+        return {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                       "decision": {"behavior": "allow"}}}
+    if decision.decision == "deny":
+        return {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                       "decision": {"behavior": "deny", "message": f"copse: {decision.reason}"}}}
+    return None
+
+
+# -- providers: Antigravity (agy) --------------------------------------------------------------
+#
+# agy's PreToolUse hook gets {toolCall: {name, args}, stepIdx, conversationId,
+# workspacePaths, ...}; tool arguments are CamelCase, and agy's own transcripts
+# show some string values JSON-encoded a second time ("\"npm test\""), so
+# both are accepted. agy ignores a hook's "allow" (upstream bug
+# google-antigravity/antigravity-cli#1053) and treats a missing answer as a
+# deny, so the hook only ever answers deny or ask, and copse mirrors its allow
+# rules into agy's own settings instead (copse.antigravity.sync_permissions).
+# PreToolUse runs for every tool call, not only for one agy would prompt for,
+# so a PostToolUse after it doesn't mean the person approved anything: copse
+# doesn't learn from agy.
+
+AGY_KINDS = {
+    "run_command": "bash",
+    "view_file": "read", "view_file_outline": "read", "list_dir": "read", "grep_search": "read",
+    "find_by_name": "read", "codebase_search": "read", "read_file": "read",
+    "write_to_file": "write", "create_file": "write", "write_file": "write", "delete_file": "write",
+    "replace_file_content": "edit", "multi_replace_file_content": "edit", "edit_file": "edit",
+    "read_url_content": "fetch", "search_web": "fetch",
+    "call_mcp_tool": "mcp",
+}
+AGY_PATH_ARGS = ("AbsolutePath", "TargetFile", "DirectoryPath", "SearchPath", "SearchDirectory",
+                 "FilePath", "File", "Path")
+
+
+def _agy_arg(args: dict, name: str) -> str | None:
+    value = args.get(name)
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, str):
+            return decoded
+    return value
+
+
+def from_agy(payload: dict, worktree: str = "", repo_root: str = "") -> Request | None:
+    """agy's PreToolUse payload as a Request; None when it names no tool."""
+    call = payload.get("toolCall")
+    if not isinstance(call, dict):
+        return None
+    name = call.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    args = call.get("args") if isinstance(call.get("args"), dict) else {}
+    spaces = payload.get("workspacePaths")
+    first = spaces[0] if isinstance(spaces, list) and spaces and isinstance(spaces[0], str) else ""
+    cwd = _agy_arg(args, "Cwd") or first or worktree
+    kind = "mcp" if name.startswith("mcp_") else AGY_KINDS.get(name, "other")
+    tool, command, path, url = name, None, None, None
+    if kind == "bash":
+        command = _agy_arg(args, "CommandLine")
+    elif kind in PATH_KINDS:
+        raw = next((v for v in (_agy_arg(args, a) for a in AGY_PATH_ARGS) if v), None)
+        path = _abs_path(raw, cwd) if raw else None
+    elif kind == "fetch":
+        url = _agy_arg(args, "Url")
+    elif name == "call_mcp_tool":
+        server, inner = _agy_arg(args, "ServerName"), _agy_arg(args, "ToolName")
+        if server and inner:
+            tool = f"mcp__{server}__{inner}"
+    return Request("antigravity", kind, tool, cwd, worktree, repo_root, command, path, url)
+
+
+def agy_output(decision: Decision | None) -> dict:
+    """What agy's PreToolUse hook prints: deny, or ask (which leaves it to
+    agy's own settings and prompt). Never empty: agy reads that as deny."""
+    if decision is not None and decision.decision == "deny":
+        return {"decision": "deny", "reason": f"copse: {decision.reason}"}
+    why = decision.reason if decision is not None else "no decision"
+    return {"decision": "ask", "reason": f"copse: {why}"}
+
+
 # -- matching ---------------------------------------------------------------------------------
 
 
@@ -445,10 +606,23 @@ class Store:
     rules: list[Rule] = field(default_factory=list)
     # pattern id -> {"kind", "match", "count", "last"}: approvals the person gave
     approvals: dict[str, dict] = field(default_factory=dict)
+    # What copse put in agy's settings.json (copse.antigravity.sync_permissions):
+    # {"allow": [...], "deny": [...]}, only entries copse added itself, and the
+    # containers it created ("file", "permissions", "permissions.allow", ...).
+    agy_managed: dict[str, list] = field(default_factory=dict)
+    agy_created: list[str] = field(default_factory=list)
+    # repo root -> its `checks`, for each repo whose agy workers run with the
+    # policy on: what the mirror covers.
+    agy_repos: dict[str, list] = field(default_factory=dict)
+    # The Codex hook the person trusted (copse.codex_hook): command, key, hash.
+    codex_hook: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> str:
-        return json.dumps({"version": 1, "rules": [r.to_dict() for r in self.rules],
-                           "approvals": self.approvals}, indent=2) + "\n"
+        data: dict = {"version": 1, "rules": [r.to_dict() for r in self.rules], "approvals": self.approvals}
+        for name in ("agy_managed", "agy_created", "agy_repos", "codex_hook"):
+            if getattr(self, name):
+                data[name] = getattr(self, name)
+        return json.dumps(data, indent=2) + "\n"
 
 
 def load_store() -> Store:
@@ -462,7 +636,17 @@ def load_store() -> Store:
              if r and r.source in ("user", "learned")]
     approvals = data.get("approvals")
     approvals = {k: v for k, v in approvals.items() if isinstance(v, dict)} if isinstance(approvals, dict) else {}
-    return Store(rules, approvals)
+
+    def strings(value: object) -> list[str]:
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+    managed = data.get("agy_managed")
+    managed = {k: strings(v) for k, v in managed.items() if k in ("allow", "deny")} if isinstance(managed, dict) else {}
+    repos = data.get("agy_repos")
+    repos = {k: strings(v) for k, v in repos.items()} if isinstance(repos, dict) else {}
+    codex = data.get("codex_hook")
+    codex = {k: v for k, v in codex.items() if isinstance(v, str)} if isinstance(codex, dict) else {}
+    return Store(rules, approvals, managed, strings(data.get("agy_created")), repos, codex)
 
 
 @contextmanager
@@ -583,3 +767,94 @@ def accept(id_: str) -> Rule | None:
     if s is None:
         return None
     return add_rule(s.kind, s.match, "allow", "exact", source="learned")
+
+
+# -- mirroring into agy's own settings ---------------------------------------------------------
+#
+# agy ignores a hook's allow, so the allow rules that agy's rule syntax can say
+# exactly (or more narrowly) are copied into its settings; denies too, as a
+# second line behind the hook. Anything agy can't say without widening an
+# allow is left out (the tracked-files read rule, globs, URLs).
+
+_AGY_SIMPLE_CHARS = "[A-Za-z0-9_\\-./:=@%+, ]"
+
+
+def _re_literal(text: str) -> str:
+    """``text`` as an RE2 literal (escaping only what RE2 treats specially)."""
+    return re.sub(r"([\\.+*?()|\[\]{}^$])", r"\\\1", text)
+
+
+def _agy_path(match: str) -> str:
+    return os.path.expanduser(match)
+
+
+def _agy_entry(rule: Rule) -> str | None:
+    """``rule`` in agy's syntax, or None when agy can't express it safely."""
+    allow = rule.decision == "allow"
+    if rule.kind == "bash":
+        if rule.match_type == "exact":
+            if allow and simple_argv(rule.match) is None:
+                return None  # copse itself never allows it
+            return f"command(regex:^{_re_literal(rule.match.strip())}$)"
+        if rule.match_type == "prefix":
+            if allow:
+                # Only what copse would allow: the prefix, then simple characters.
+                if not SIMPLE_COMMAND.fullmatch(rule.match):
+                    return None
+                return f"command(regex:^{_re_literal(rule.match)}{_AGY_SIMPLE_CHARS}*$)"
+            return f"command(regex:^{_re_literal(rule.match)})"
+        if rule.match_type == "glob" and not allow and not re.search(r"[\[\]]", rule.match):
+            body = "".join(".*" if c == "*" else "." if c == "?" else _re_literal(c) for c in rule.match)
+            return f"command(regex:^{body}$)"
+        return None
+    if rule.kind in PATH_KINDS:
+        verb = "read_file" if rule.kind == "read" else "write_file"
+        if rule.match_type == "exact":
+            return f"{verb}({_agy_path(rule.match)})"
+        if rule.match_type == "prefix" and rule.match.endswith("/"):
+            return f"{verb}({_agy_path(rule.match)})"  # a folder: agy's is recursive too
+        if rule.match_type == "glob" and not allow:
+            # "<path>*" or "<dir>/*" with no other wildcard: agy's path rule
+            # covers the path (or folder) itself, which is narrower; fine for a
+            # deny the hook enforces anyway.
+            stem = rule.match.rstrip("*")
+            if stem and stem != rule.match and not re.search(r"[*?\[]", stem) and not stem.startswith("*"):
+                path = _agy_path(stem)
+                if os.path.isabs(path):
+                    return f"{verb}({path.rstrip('/') or '/'})"
+        return None
+    if rule.kind == "mcp" and rule.match.startswith("mcp__"):
+        parts = rule.match[len("mcp__"):].split("__", 1)
+        if rule.match_type == "exact" and len(parts) == 2 and all(parts):
+            return f"mcp({parts[0]}/{parts[1]})"
+        if rule.match_type == "prefix" and len(parts) == 2 and parts[0] and not parts[1]:
+            return f"mcp({parts[0]}/*)"
+        return None
+    return None
+
+
+def mirror_agy(rules: list[Rule], checks: list[str]) -> dict[str, list[str]]:
+    """The agy settings entries for ``rules`` (the built-in ones expanded:
+    ``checks`` and the read-only git commands as exact commands, git push as
+    a deny), as {"allow": [...], "deny": [...]}."""
+    out: dict[str, list[str]] = {"allow": [], "deny": []}
+
+    def add(decision: str, entry: str | None) -> None:
+        if entry and entry not in out[decision]:
+            out[decision].append(entry)
+
+    for rule in rules:
+        if rule.match_type == "check":
+            for c in checks:
+                if simple_argv(c.strip()):
+                    add("allow", f"command(regex:^{_re_literal(c.strip())}$)")
+        elif rule.match_type == "git-readonly":
+            for sub in READONLY_GIT:
+                add("allow", f"command(regex:^git {sub}$)")
+        elif rule.match_type == "git-push":
+            add("deny", "command(git push)")
+        elif rule.match_type in BUILTIN_MATCHERS:
+            continue  # tracked files, force flags: only the hook can tell
+        else:
+            add(rule.decision, _agy_entry(rule))
+    return out

@@ -1862,9 +1862,10 @@ def _record_permission(db: DB, agent: Agent, ws: Workspace | None, summary: str,
                               task=summary, result=result)
 
 
-def permission_request_decision(db: DB, agent: Agent, payload: dict) -> dict | None:
-    """Claude Code's PermissionRequest hook: copse's permission policy
-    (copse.permissions) answers allow or deny, or None to let Claude Code
+def permission_request_decision(db: DB, agent: Agent, payload: dict,
+                                provider: str = "claude") -> dict | None:
+    """Claude Code's or Codex's PermissionRequest hook: copse's permission
+    policy (copse.permissions) answers allow or deny, or None to let the CLI
     prompt the person as usual (ask). Off unless the repo or user config
     sets ``permission_policy: "on"``. Never raises: any failure is ask."""
     try:
@@ -1877,6 +1878,17 @@ def permission_request_decision(db: DB, agent: Agent, payload: dict) -> dict | N
         cfg = load_repo_config(ws.repo_root)
         if cfg.permission_policy != "on":
             return None
+        if provider == "codex":
+            # No tool_use_id in Codex's payload: nothing to pair an approval
+            # with, so nothing is kept for learning.
+            reqs = permissions.from_codex(payload, worktree=ws.path, repo_root=ws.repo_root)
+            if not reqs:
+                return None
+            decision = permissions.decide_all(reqs, checks=cfg.checks)
+            summary = reqs[0].summary() if len(reqs) == 1 else (
+                f"{reqs[0].tool}: " + ", ".join(r.path or "?" for r in reqs))[:200]
+            _record_permission(db, agent, ws, summary, f"{decision.decision}: {decision.reason}")
+            return permissions.codex_output(decision)
         req = permissions.from_claude(payload, worktree=ws.path, repo_root=ws.repo_root)
         if req is None:
             return None
@@ -2034,6 +2046,8 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
         return pre_tool_decision(db, agent, payload)
     elif event == "permission-request":
         return permission_request_decision(db, agent, payload)
+    elif event == "codex-permission-request":
+        return permission_request_decision(db, agent, payload, provider="codex")
     elif event == "tool-done":
         db.set_status(agent_id, "processing", only_if="waiting")
         db.set_status(agent_id, "processing", only_if="idle")  # see "pre-tool"
@@ -2131,6 +2145,9 @@ def tell_parent_unreported(db: DB, agent: Agent) -> None:
         pass
 
 
+PERMISSION_EVENTS = ("permission-request", "codex-permission-request")
+
+
 def hook_main(db: DB, agent_id: str, event: str, stdin_text: str, trusted: bool = True) -> str:
     """``trusted`` is False when ``agent_id`` came from the environment,
     which can be stale (see ClaudeCode._hook): then an agent already known
@@ -2141,9 +2158,9 @@ def hook_main(db: DB, agent_id: str, event: str, stdin_text: str, trusted: bool 
         payload = {}
     if not trusted:
         agent_id = agent_for_session(db, payload.get("session_id")) or agent_id
-    if event == "permission-request":
+    if event in PERMISSION_EVENTS:
         # Never let a failure turn into a decision: anything wrong means no
-        # output, so Claude Code prompts the person as usual.
+        # output, so the CLI prompts the person as usual.
         if not isinstance(payload, dict):
             return ""
         try:

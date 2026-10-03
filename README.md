@@ -304,6 +304,7 @@ your own status line prints, so what you see doesn't change.
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
 | `copse history --share [--session ID]` | a few lines about this session to paste into Slack or a post: goal, milestones verified, workers, merges, reviews (and how many by a different model), parallel speedup, tokens |
 | `copse permissions list / suggestions / accept / allow / deny / forget / reset` | the rules copse answers workers' permission requests with, and what it suggests from your approvals (see "Permission policy") |
+| `copse permissions install-codex-hook [--yes]` / `copse permissions sync-agy` | trust copse's Codex permission hook once; copy your rules into Antigravity's settings (see "Permission policy") |
 | `copse learning` | whether copse Pro's hosted learning is on for this repo, and if not, why (nothing is learned on your machine) |
 | `copse account [login\|logout\|status\|upgrade\|portal\|org]` | paid features: bare `copse account` shows what your plan has and how to get the rest (see "copse Pro and Team" below) |
 | `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
@@ -526,7 +527,7 @@ plan that includes them.
 ### Permission policy
 
 With `"permission_policy": "on"` (repo config or `~/.copse/config.json`), when
-a Claude Code worker is about to show a permission prompt, its
+a Claude Code worker (Codex and Antigravity: see below) is about to show a permission prompt, its
 `PermissionRequest` hook hands copse the structured request (the tool and its
 command, path or URL; copse never reads the screen) and copse answers
 **allow**, **deny**, or **ask**, which leaves the prompt to you as usual. Any
@@ -560,6 +561,32 @@ it, and `copse permissions accept ID` makes it a rule. A prompt the turn ended
 on without the tool running counts for nothing. Every decision is in
 `copse history --kind permission`, and when a worker sits on a prompt, its
 supervisor is told exactly which request is pending (only you can answer it).
+
+**Codex.** Codex runs a hook only after you've trusted it, so run
+`copse permissions install-codex-hook` once: it shows what it will change,
+and with `--yes` it adds one entry, `[hooks.state."/<session-flags>/config.toml:permission_request:0:0"]
+trusted_hash = "sha256:..."`, to Codex's `config.toml` (`~/.codex`, or
+`$CODEX_HOME`), written by Codex itself. copse passes the hook on the command
+line of the Codex workers it starts (only while `permission_policy` is on), with
+the same command for every worker, so that one trust covers every worktree.
+Nothing else in `~/.codex` changes; reinstalling copse somewhere else changes
+the command and needs the step again (until then Codex workers simply prompt).
+Codex patches are checked file by file: allowed only if every file is. Codex
+doesn't say which tool run followed which prompt, so copse doesn't learn from
+Codex approvals. To undo, delete that entry (or untrust it in Codex's `/hooks`).
+
+**Antigravity.** agy's hook can deny but its "allow" is ignored (an agy bug),
+so the hook answers deny or ask, and copse copies the rules agy can express
+exactly into your `~/.gemini/antigravity-cli/settings.json` `permissions`
+(allows to `allow`: your checks and `git status/diff/log/show` as exact
+commands, your own exact rules; denies to `deny`). It adds only entries that
+weren't there, remembers which ones in `~/.copse/permissions.json`, never
+touches anything else, and keeps your original file once as
+`settings.json.copse-backup`. It syncs when an agy worker starts and after
+`copse permissions allow/deny/accept/forget/reset`; `copse permissions sync-agy`
+does it by hand. To undo, turn `permission_policy` off and run `sync-agy`: copse
+removes exactly its own entries. copse doesn't learn from agy approvals (its
+hook runs for every tool call, so a tool running doesn't mean you approved it).
 
 ## copse Pro and Team
 

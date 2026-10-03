@@ -127,6 +127,17 @@ def cli_sign_in_unknown(monkeypatch):
     monkeypatch.setattr(antigravity, "BUNDLED", "/nonexistent/agy")
 
 
+@pytest.fixture(autouse=True)
+def agy_settings(tmp_path, monkeypatch):
+    """agy's settings.json (which copse's permission policy mirrors rules
+    into) lives under the temporary directory, never the real home."""
+    from copse import antigravity
+
+    path = tmp_path / "gemini" / "antigravity-cli" / "settings.json"
+    monkeypatch.setattr(antigravity, "settings_path", lambda: path)
+    return path
+
+
 @pytest.fixture
 def db(copse_home):
     return DB()
