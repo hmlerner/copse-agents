@@ -27,8 +27,9 @@ agy's hooks, mapped onto copse's:
   hook (the report reminder, autopilot), where ``{"decision": "continue",
   "reason": ...}`` keeps it going.
 - ``PostToolUse``: a tool ran, so a permission prompt was answered.
-- ``PreToolUse`` (only with ``permission_policy: "on"``): copse's permission
-  policy (copse.permissions) answers deny or ask, never nothing.
+- ``PreToolUse`` (only with ``permission_policy: "on"``, only for
+  run_command): copse's permission policy (copse.permissions) answers deny or
+  ask, never nothing.
 agy has no hook for "waiting for approval": that is read from the screen.
 Hooks can't approve anything in agy (a hook's "allow" is ignored), so with the
 policy on copse mirrors the allow rules agy's syntax can express into the
@@ -59,12 +60,13 @@ EVENTS = {
     "PostToolUse": "agy-post-tool",
     "PreToolUse": "agy-pre-tool",
 }
-# The tools copse's policy has an opinion on (copse.permissions.from_agy);
-# others never reach its hook.
-PRE_TOOL_MATCHER = ("run_command|view_file|view_file_outline|list_dir|grep_search|find_by_name|"
-                    "codebase_search|read_file|write_to_file|create_file|write_file|delete_file|"
-                    "replace_file_content|multi_replace_file_content|edit_file|read_url_content|"
-                    "search_web|call_mcp_tool|mcp_.*")
+# Only shell commands reach copse's hook. Its answer is deny or "ask", and
+# agy's "ask" prompts unless an Always Allow rule covers the call: harmless for
+# run_command (agy prompts for a command it hasn't been allowed anyway), but
+# for tools agy runs without asking (view_file, list_dir, ...) it would add a
+# prompt. Other tools keep agy's own behaviour; their denies are mirrored into
+# agy's settings (sync_permissions).
+PRE_TOOL_MATCHER = "run_command"
 TOOLS_NOTE = """\
 When you run under copse, its tools (assign, handoff, report_result,
 send_message, workspace_diff, merge_workspace, get_progress and the rest) are

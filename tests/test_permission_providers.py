@@ -312,7 +312,9 @@ def test_agy_install_adds_the_pre_tool_hook_only_with_the_policy(ws, monkeypatch
     antigravity.install(ws.path, permission_policy=True)
     hooks = json.loads(open(os.path.join(ws.path, ".agents", "hooks.json")).read())["copse"]
     [entry] = hooks["PreToolUse"]
-    assert "run_command" in entry["matcher"] and "agy-pre-tool" in entry["hooks"][0]["command"]
+    # Only shell commands: agy's "ask" would add a prompt to tools it runs
+    # without asking (view_file, list_dir, ...).
+    assert entry["matcher"] == "run_command" and "agy-pre-tool" in entry["hooks"][0]["command"]
 
 
 # -- agy: mirroring copse's rules into its settings --------------------------------------------
