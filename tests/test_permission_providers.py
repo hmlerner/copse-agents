@@ -78,6 +78,21 @@ def test_codex_patch_is_a_request_per_file(ws):
     assert r.kind == "edit" and r.path is None
 
 
+@pytest.mark.parametrize("patch", [
+    "*** Begin Patch\n*** Update File: a.py\n  *** Update File: /etc/hosts\n*** End Patch\n",
+    "*** Begin Patch\n*** Update File: a.py\n\t*** Add File: b.py\n*** End Patch\n",
+    "*** Begin Patch\n*** Update File: a.py\n*** update file: b.py\n*** End Patch\n",
+    "*** Begin Patch\n*** Update File: a.py\n***Update File: b.py\n*** End Patch\n",
+    "*** Begin Patch\n*** Update File: a.py\n*** Rename File: b.py\n*** End Patch\n",
+])
+def test_a_patch_with_a_header_copse_cant_account_for_is_ask(ws, patch):
+    # Codex's patch reader may accept a header copse's doesn't (indented, other
+    # case, no space): then copse can't know every file it touches.
+    reqs = from_codex(codex_payload("apply_patch", {"command": patch}, ws.path), ws.path, ws.repo_root)
+    allow_all = [Rule("edit", "*", "glob", "allow"), Rule("write", "*", "glob", "allow")]
+    assert decide_all(reqs, rules=allow_all).decision == "ask"
+
+
 def test_a_patch_is_allowed_only_if_every_file_is(ws):
     two = "*** Begin Patch\n*** Update File: a.py\n*** Update File: b.py\n*** End Patch\n"
     reqs = from_codex(codex_payload("apply_patch", {"command": two}, ws.path), ws.path, ws.repo_root)
@@ -352,7 +367,8 @@ def test_agy_sync_adds_and_removes_only_its_own_entries(agy_settings, monkeypatc
     data = json.loads(agy_settings.read_text())
     allow, deny = data["permissions"]["allow"], data["permissions"]["deny"]
     assert allow[:2] == ["command(regex:^git status$)", "command(npm)"]  # the person's, first, untouched
-    assert "command(regex:^uv run pytest -q$)" in allow and "command(regex:^git diff$)" in allow
+    assert "command(regex:^git diff$)" in allow
+    assert not any("pytest" in e for e in allow)  # a repo's checks stay out of agy's global settings
     assert allow.count("command(regex:^git status$)") == 1  # theirs already; not copse's
     assert "command(git push)" in deny and f"read_file({os.path.expanduser('~/.ssh')})" in deny
     assert data["colorScheme"] == "tokyo night" and data["permissions"]["ask"] == ["command(*)"]
@@ -438,6 +454,9 @@ def test_agy_mirror_never_widens_an_allow():
     out = permissions.mirror_agy(rules, ["make check", "a && b"])
     assert out["allow"] == ["read_file(docs/)", "mcp(gh/*)", "command(regex:^npm test$)"]
     out = permissions.mirror_agy([*permissions.DEFAULT_RULES], ["make check", "a && b"])
-    assert "command(regex:^make check$)" in out["allow"]
-    assert not any("a && b" in e for e in out["allow"])
+    # agy's settings apply to every project, and a repo's check runs what
+    # that repo defines: allowed for copse workers in that repo, never
+    # everywhere agy runs.
+    assert not any("make check" in e or "a && b" in e for e in out["allow"])
+    assert "command(regex:^git status$)" in out["allow"]
     assert not any("tracked" in e for e in out["allow"])

@@ -242,6 +242,21 @@ def claude_output(decision: Decision) -> dict | None:
 CODEX_PATCH_FILE = re.compile(r"^\*\*\* (Add|Update|Delete) File: (.+?)\s*$", re.M)
 CODEX_PATCH_MOVE = re.compile(r"^\*\*\* Move to: (.+?)\s*$", re.M)
 CODEX_PATCH_KINDS = {"Add": "write", "Update": "edit", "Delete": "write"}
+CODEX_PATCH_MARKERS = ("*** Begin Patch", "*** End Patch", "*** End of File")
+
+
+def _codex_patch_accounted(patch: str) -> bool:
+    """Every line that looks like a patch header ("***" after any leading
+    whitespace) is exactly one copse reads. Codex's own reader may accept a
+    looser header (indented, other case); copse then can't know every file."""
+    for line in patch.splitlines():
+        if not line.lstrip().startswith("***"):
+            continue
+        bare = line.rstrip()
+        if bare in CODEX_PATCH_MARKERS or CODEX_PATCH_FILE.fullmatch(bare) or CODEX_PATCH_MOVE.fullmatch(bare):
+            continue
+        return False
+    return True
 
 
 def _abs_path(raw: str, cwd: str) -> str:
@@ -277,8 +292,8 @@ def from_codex(payload: dict, worktree: str = "", repo_root: str = "") -> list[R
             patch = ti["command"][-1] if isinstance(ti["command"][-1], str) else None
         files = [(CODEX_PATCH_KINDS[m.group(1)], m.group(2)) for m in CODEX_PATCH_FILE.finditer(patch or "")]
         files += [("write", m.group(1)) for m in CODEX_PATCH_MOVE.finditer(patch or "")]
-        if not files:
-            return [Request(kind="edit", **base)]  # no path: ask
+        if not files or not _codex_patch_accounted(patch or ""):
+            return [Request(kind="edit", **base)]  # no path (or not every one known): ask
         out = list(dict.fromkeys((k, _abs_path(f, cwd)) for k, f in files))
         return [Request(kind=k, path=path, **base) for k, path in out]
     return [Request(kind="other", **base)]
@@ -835,8 +850,10 @@ def _agy_entry(rule: Rule) -> str | None:
 
 def mirror_agy(rules: list[Rule], checks: list[str]) -> dict[str, list[str]]:
     """The agy settings entries for ``rules`` (the built-in ones expanded:
-    ``checks`` and the read-only git commands as exact commands, git push as
-    a deny), as {"allow": [...], "deny": [...]}."""
+    the read-only git commands as exact commands, git push as a deny), as
+    {"allow": [...], "deny": [...]}. A repo's ``checks`` aren't mirrored:
+    agy's settings apply to every project, and a check runs whatever that
+    repo defines, so it's allowed only for copse workers in that repo."""
     out: dict[str, list[str]] = {"allow": [], "deny": []}
 
     def add(decision: str, entry: str | None) -> None:
@@ -845,9 +862,7 @@ def mirror_agy(rules: list[Rule], checks: list[str]) -> dict[str, list[str]]:
 
     for rule in rules:
         if rule.match_type == "check":
-            for c in checks:
-                if simple_argv(c.strip()):
-                    add("allow", f"command(regex:^{_re_literal(c.strip())}$)")
+            continue
         elif rule.match_type == "git-readonly":
             for sub in READONLY_GIT:
                 add("allow", f"command(regex:^git {sub}$)")
