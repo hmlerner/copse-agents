@@ -1436,7 +1436,11 @@ def wait_for_result(db: DB, agent_id: str, timeout: float, poll: float = 2.0) ->
             raise AgentError(f"agent {agent_id} exited without reporting. Last output:\n{screen}")
         time.sleep(poll)
     agent = db.get_agent(agent_id)
-    hint = " It is waiting for a permission approval: attach to its workspace to answer." if agent and agent.status == "waiting" else ""
+    hint = ""
+    if agent and agent.status == "waiting":
+        pending = pending_permission(db, agent.id)
+        hint = (" It is waiting for a permission approval" + (f": {pending[:-1]}" if pending else "")
+                + ". Attach to its workspace to answer.")
     raise StillRunning(
         f"agent {agent_id} hasn't reported yet after {int(timeout)}s "
         f"(status: {agent.status if agent else '?'}).{hint}"
@@ -1850,6 +1854,90 @@ def pre_tool_decision(db: DB, agent: Agent, payload: dict) -> dict | None:
     }}
 
 
+def _record_permission(db: DB, agent: Agent, ws: Workspace | None, summary: str, result: str) -> None:
+    from copse import history
+
+    if ws is not None:
+        history.record_safely(db, ws.repo_root, "permission", agent=agent, branch=ws.branch,
+                              task=summary, result=result)
+
+
+def permission_request_decision(db: DB, agent: Agent, payload: dict,
+                                provider: str = "claude") -> dict | None:
+    """Claude Code's or Codex's PermissionRequest hook: copse's permission
+    policy (copse.permissions) answers allow or deny, or None to let the CLI
+    prompt the person as usual (ask). Off unless the repo or user config
+    sets ``permission_policy: "on"``. Never raises: any failure is ask."""
+    try:
+        from copse import permissions
+        from copse.config import load_repo_config
+
+        ws = db.get_workspace(agent.workspace_id)
+        if ws is None:
+            return None
+        cfg = load_repo_config(ws.repo_root)
+        if cfg.permission_policy != "on":
+            return None
+        if provider == "codex":
+            # No tool_use_id in Codex's payload: nothing to pair an approval
+            # with, so nothing is kept for learning.
+            reqs = permissions.from_codex(payload, worktree=ws.path, repo_root=ws.repo_root)
+            if not reqs:
+                return None
+            decision = permissions.decide_all(reqs, checks=cfg.checks)
+            summary = reqs[0].summary() if len(reqs) == 1 else (
+                f"{reqs[0].tool}: " + ", ".join(r.path or "?" for r in reqs))[:200]
+            _record_permission(db, agent, ws, summary, f"{decision.decision}: {decision.reason}")
+            return permissions.codex_output(decision)
+        req = permissions.from_claude(payload, worktree=ws.path, repo_root=ws.repo_root)
+        if req is None:
+            return None
+        decision = permissions.decide(req, checks=cfg.checks)
+        _record_permission(db, agent, ws, req.summary(), f"{decision.decision}: {decision.reason}")
+        tool_use_id = payload.get("tool_use_id")
+        if decision.decision == "ask" and isinstance(tool_use_id, str) and tool_use_id:
+            db.add_permission_request(agent.id, tool_use_id, json.dumps(req.to_dict()), decision.reason)
+        return permissions.claude_output(decision)
+    except Exception:  # noqa: BLE001 - a broken policy must fall through to the prompt
+        log.exception("copse: permission policy failed; leaving it to the user")
+        return None
+
+
+def note_permission_outcome(db: DB, agent: Agent, payload: dict) -> None:
+    """PostToolUse: if the tool's request had been left to the person, they
+    approved it. Count that toward a suggestion (never a rule by itself)."""
+    tool_use_id = payload.get("tool_use_id")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        return
+    try:
+        row = db.pop_permission_request(agent.id, tool_use_id)
+        if row is None:
+            return
+        from copse import permissions
+
+        req = permissions.Request.from_dict(json.loads(row["request"]))
+        permissions.record_approval(req)
+        _record_permission(db, agent, db.get_workspace(agent.workspace_id), req.summary(),
+                           "approved by the user")
+    except Exception:  # noqa: BLE001 - learning is a side record
+        log.exception("copse: couldn't record a permission approval")
+
+
+def pending_permission(db: DB, agent_id: str) -> str | None:
+    """The request a worker is waiting on the person for, in a sentence, if
+    copse's policy left one to them (the supervisor can't answer it)."""
+    try:
+        row = db.latest_permission_request(agent_id)
+        if row is None:
+            return None
+        from copse import permissions
+
+        req = permissions.Request.from_dict(json.loads(row["request"]))
+        return f"It is asking to use {req.summary()} (copse's permission policy: {row['reason']})."
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _stop_decision(db: DB, agent: Agent, payload: dict, via_inbox: bool = False) -> dict | None:
     """What the Stop hook decides: a "block" with the reason to carry on, or
     None to let the agent stop. ``via_inbox``: the reason will be sent as an
@@ -1956,11 +2044,20 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
         # dashboard's one-sample screen read never overrides 'idle'.
         db.set_status(agent_id, "processing", only_if="idle")
         return pre_tool_decision(db, agent, payload)
+    elif event == "permission-request":
+        return permission_request_decision(db, agent, payload)
+    elif event == "codex-permission-request":
+        return permission_request_decision(db, agent, payload, provider="codex")
     elif event == "tool-done":
         db.set_status(agent_id, "processing", only_if="waiting")
         db.set_status(agent_id, "processing", only_if="idle")  # see "pre-tool"
+        note_permission_outcome(db, agent, payload)
     elif event == "stop":
         from copse import inbox
+
+        # A request left to the person with no PostToolUse by the end of the
+        # turn wasn't approved (or we can't tell): drop it, learn nothing.
+        db.clear_permission_requests(agent_id)
 
         # Claude Code shows any blocked stop as "Stop hook error" in the chat.
         # Where a person watches (an interactive agent with an inbox), copse
@@ -1997,6 +2094,7 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
     elif event == "stop-failure":
         # The turn ended on an API error; no Stop hook follows.
         db.set_status(agent_id, "idle")
+        db.clear_permission_requests(agent_id)
         if "rate_limit" in json.dumps(payload):
             from copse import autopilot as pilot
 
@@ -2047,6 +2145,9 @@ def tell_parent_unreported(db: DB, agent: Agent) -> None:
         pass
 
 
+PERMISSION_EVENTS = ("permission-request", "codex-permission-request")
+
+
 def hook_main(db: DB, agent_id: str, event: str, stdin_text: str, trusted: bool = True) -> str:
     """``trusted`` is False when ``agent_id`` came from the environment,
     which can be stale (see ClaudeCode._hook): then an agent already known
@@ -2057,5 +2158,16 @@ def hook_main(db: DB, agent_id: str, event: str, stdin_text: str, trusted: bool 
         payload = {}
     if not trusted:
         agent_id = agent_for_session(db, payload.get("session_id")) or agent_id
+    if event in PERMISSION_EVENTS:
+        # Never let a failure turn into a decision: anything wrong means no
+        # output, so the CLI prompts the person as usual.
+        if not isinstance(payload, dict):
+            return ""
+        try:
+            out = handle_hook(db, agent_id, event, payload)
+        except Exception:  # noqa: BLE001
+            log.exception("copse: permission-request hook failed")
+            return ""
+        return json.dumps(out) if out else ""
     out = handle_hook(db, agent_id, event, payload)
     return json.dumps(out) if out else ""

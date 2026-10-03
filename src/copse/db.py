@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     repo_root TEXT NOT NULL,
     ts REAL NOT NULL,
-    kind TEXT NOT NULL,             -- worker_result | review | merge | check | milestone
+    kind TEXT NOT NULL,             -- worker_result | review | merge | check | milestone | permission
     agent_id TEXT,
     branch TEXT,
     profile TEXT,
@@ -251,6 +251,18 @@ CREATE TABLE IF NOT EXISTS pool_failures (
     base_branch TEXT NOT NULL,
     failed_at REAL NOT NULL,
     PRIMARY KEY (repo_root, base_branch)
+);
+-- A tool-permission request copse's policy left to the person (see
+-- copse.permissions): the structured request, so the supervisor can be told
+-- exactly what's pending, and so the tool's PostToolUse (same tool_use_id)
+-- can count as the person approving it. Cleared when the turn ends.
+CREATE TABLE IF NOT EXISTS permission_requests (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    tool_use_id TEXT NOT NULL,
+    request TEXT NOT NULL,          -- JSON of copse.permissions.Request
+    reason TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (agent_id, tool_use_id)
 );
 """
 
@@ -722,6 +734,31 @@ class DB:
     def mark_delivered(self, message_id: int) -> None:
         with self.tx() as c:
             c.execute("UPDATE inbox SET delivered_at=? WHERE id=?", (time.time(), message_id))
+
+    # -- permission requests left to the person (copse.permissions) --
+
+    def add_permission_request(self, agent_id: str, tool_use_id: str, request: str, reason: str) -> None:
+        with self.tx() as c:
+            c.execute("INSERT OR REPLACE INTO permission_requests (agent_id, tool_use_id, request, "
+                      "reason, created_at) VALUES (?,?,?,?,?)",
+                      (agent_id, tool_use_id, request, reason, time.time()))
+
+    def pop_permission_request(self, agent_id: str, tool_use_id: str) -> sqlite3.Row | None:
+        with self.tx() as c:
+            row = c.execute("SELECT * FROM permission_requests WHERE agent_id=? AND tool_use_id=?",
+                            (agent_id, tool_use_id)).fetchone()
+            if row is not None:
+                c.execute("DELETE FROM permission_requests WHERE agent_id=? AND tool_use_id=?",
+                          (agent_id, tool_use_id))
+        return row
+
+    def latest_permission_request(self, agent_id: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM permission_requests WHERE agent_id=? "
+                                 "ORDER BY created_at DESC LIMIT 1", (agent_id,)).fetchone()
+
+    def clear_permission_requests(self, agent_id: str) -> None:
+        with self.tx() as c:
+            c.execute("DELETE FROM permission_requests WHERE agent_id=?", (agent_id,))
 
     def pop_pending(self, agent_id: str) -> Message | None:
         """Atomically claim the oldest undelivered message, if any."""
