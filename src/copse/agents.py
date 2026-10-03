@@ -1687,7 +1687,7 @@ def request_review(db: DB, caller: Agent | None, ws: Workspace, profile: str | N
     except KeyError as e:
         raise AgentError(str(e)) from e
     _airgap_check(chosen, ws.repo_root)   # before any of the branch is read for the brief
-    why = unusable(chosen.provider)
+    why = unusable("codex") if chosen.provider == "codex" else None
     if why:
         raise AgentError(
             f"reviewer profile {profile!r} can't run: {why}. "
