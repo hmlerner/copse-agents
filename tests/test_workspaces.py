@@ -164,3 +164,11 @@ def test_stale_local_base_compares_against_origin(db, repo, tmp_path):
     ws = workspaces.create(db, str(repo), "feature").workspace  # from origin/main
     assert git.base_ref(ws.path, "main") == "origin/main"
     assert git.status(ws.path, "main").ahead == 0
+
+
+def test_adopt_root_picks_up_a_branch_switch(db, repo):
+    sh("git switch -qc feat/old", repo)
+    assert workspaces.adopt_root(db, str(repo)).branch == "feat/old"
+    sh("git switch -q main", repo)
+    assert workspaces.adopt_root(db, str(repo)).branch == "main"
+    assert db.workspace_by_path(str(repo)).branch == "main"

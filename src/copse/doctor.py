@@ -68,7 +68,27 @@ def preflight(provider: str) -> list[str]:
         if not (shutil.which(exe) or os.path.isfile(exe)):
             name, how = CLI_INSTALL[provider]
             problems.append(f"{name} (`{exe}`) isn't on PATH: the chat runs on it. Install: {how}")
+        else:
+            why = providers.signed_out(provider)
+            if why:
+                problems.append(why)
     return problems
+
+
+def signin_checks() -> list[Check]:
+    """Whether each installed CLI that has a sign-in status is signed in."""
+    from copse import providers
+
+    out = []
+    for provider, binary, required in (("claude", providers.claude_binary, True),
+                                       ("codex", providers.codex_binary, False)):
+        exe = binary()
+        if not (shutil.which(exe) or os.path.isfile(exe)):
+            continue
+        why = providers.signed_out(provider)
+        name = f"{CLI_INSTALL[provider][0]} sign-in"
+        out.append(Check((FAIL if required else WARN) if why else OK, name, why or "no sign-in problem found"))
+    return out
 
 
 def checks(repo_root: str | None) -> list[Check]:
@@ -86,6 +106,7 @@ def checks(repo_root: str | None) -> list[Check]:
     out.append(_tool("codex", False, "only needed for Codex agents (reviewer-codex)",
                      install=CLI_INSTALL["codex"][1]))
     out.append(_tool("agy", False, "only needed for Google Antigravity agents"))
+    out.extend(signin_checks())
     out.append(_tool("gh", False, "only needed for `copse pr` and `copse new --pr`"))
     out.append(_tool("pre-commit", False, "only needed if the repo uses pre-commit hooks"))
     out.append(_tool("graphify", False, "only needed for the code map agents can query"))

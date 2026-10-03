@@ -243,6 +243,11 @@ def start(
             if choice == "n":
                 ws = _run(_session_worktree, db, ws)
                 typer.echo(f"✓ new session in its own worktree: {ws.path} ({ws.branch})")
+    from copse.providers import NOT_SUPERVISOR, SUPERVISOR_PROVIDERS
+
+    if provider and agent == "supervisor" and provider in NOT_SUPERVISOR:
+        _fail(f"the {provider} provider can't run the supervisor; use one of: "
+              f"{', '.join(SUPERVISOR_PROVIDERS)}")
     _preflight(agent, provider, ws.repo_root)
     # Nothing slow before the chat starts: the paused session's leftover
     # processes, old paused sessions' worktrees and the pool refill are all
@@ -1211,8 +1216,19 @@ def agent_profiles() -> None:
         root = git.main_repo_root(os.getcwd())
     except git.GitError:
         pass
+    from copse.providers import unusable
+
+    why: dict[str, str | None] = {}
+    hidden: dict[str, list[str]] = {}
     for p in list_profiles(root):
+        if p.provider not in why:
+            why[p.provider] = unusable(p.provider)
+        if why[p.provider]:
+            hidden.setdefault(why[p.provider], []).append(p.name)
+            continue
         typer.echo(f"{p.name:<14} {p.provider:<7} {p.description}")
+    for reason, names in hidden.items():
+        typer.secho(f"hidden ({reason}): {', '.join(names)}", dim=True)
 
 
 @agent_app.command("kill")

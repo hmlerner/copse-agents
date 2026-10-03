@@ -365,3 +365,26 @@ def test_trust_writes_through_a_symlinked_config(tmp_path, claude_config):
     assert trust_folder(str(folder)) is True
     assert link.is_symlink()
     assert json.loads(real.read_text())["projects"][os.path.realpath(folder)]["hasTrustDialogAccepted"] is True
+
+
+def test_silent_codex_worker_is_reported_once(db, root, screens, monkeypatch):
+    """Issue #42: a Codex worker (no hooks) stuck on a startup error."""
+    _, ws = root
+    screens["%w1"] = "■ unexpected status 403 Forbidden: your plan doesn't include Codex\n"
+    now = time.time()
+    a = worker_on(db, ws, "unknown", now - 3600)
+    db.update_agent(a.id, provider="codex")
+    last = now - cull.SILENT_AFTER - 5
+    monkeypatch.setattr(tmux, "window_activity", lambda target: last)
+
+    assert cull.note_silent(db, now, {}) != []
+    assert cull.note_silent(db, now + 60, {}) == []  # same silence: not again
+    body = db.pop_pending("boss").body
+    assert "w1" in body and "403" in body and "another profile" in body
+
+
+def test_recently_active_worker_is_not_silent(db, root, screens, monkeypatch):
+    _, ws = root
+    worker_on(db, ws, "unknown", time.time() - 3600)
+    monkeypatch.setattr(tmux, "window_activity", lambda target: time.time() - 30)
+    assert cull.note_silent(db, time.time(), {}) == []

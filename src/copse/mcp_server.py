@@ -513,7 +513,16 @@ def list_agent_profiles() -> str:
     """Agent profiles available to handoff/assign."""
     db = DB()
     _, here = _caller(db)
-    return "\n".join(f"{p.name} ({p.provider}): {p.description}" for p in list_profiles(here.repo_root))
+    from copse.providers import unusable
+
+    usable = {}
+    lines = []
+    for p in list_profiles(here.repo_root):
+        if p.provider not in usable:
+            usable[p.provider] = unusable(p.provider) is None
+        if usable[p.provider]:
+            lines.append(f"{p.name} ({p.provider}): {p.description}")
+    return "\n".join(lines)
 
 
 @mcp.tool()

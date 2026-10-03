@@ -26,7 +26,7 @@ from copse import git, tmux, workspaces
 from copse.config import RepoConfig
 from copse.db import DB, Agent, Workspace
 from copse.profiles import load_profile, missing_add_dirs
-from copse.providers import LaunchContext, get_provider
+from copse.providers import LaunchContext, get_provider, signed_out, unusable
 
 log = logging.getLogger(__name__)
 
@@ -654,6 +654,9 @@ def _launch(db: DB, agent: Agent, ws: Workspace, *, prompt: str | None,
         db.set_status(agent.id, status)
         agent.status = status
         return
+    why = signed_out(provider.name)
+    if why:
+        raise AgentError(why)
     # Here rather than in spawn, so a resume checks too: a directory can be
     # deleted between the first launch and a `copse continue`. This reaches a
     # person running copse in a terminal; a launch from the MCP server has no
@@ -1636,7 +1639,7 @@ def default_review_profile(cfg: RepoConfig, worker: Agent | None) -> str:
     if cfg.review_profile:
         return cfg.review_profile
     if worker and worker.provider == "claude":
-        if shutil.which("codex"):
+        if unusable("codex") is None:
             return "reviewer-codex"
         if _local_reviewer_available():
             return "reviewer-local"
@@ -1684,10 +1687,11 @@ def request_review(db: DB, caller: Agent | None, ws: Workspace, profile: str | N
     except KeyError as e:
         raise AgentError(str(e)) from e
     _airgap_check(chosen, ws.repo_root)   # before any of the branch is read for the brief
-    if chosen.provider == "codex" and not shutil.which("codex"):
+    why = unusable("codex") if chosen.provider == "codex" else None
+    if why:
         raise AgentError(
-            f"reviewer profile {profile!r} uses the codex provider, but codex isn't on PATH; "
-            "install it, or set review_profile (or pass profile) to a different reviewer"
+            f"reviewer profile {profile!r} can't run: {why}. "
+            "Fix that, or set review_profile (or pass profile) to a different reviewer"
         )
 
     base = ws.base_branch or "the base branch"
@@ -1979,6 +1983,15 @@ def handle_hook(db: DB, agent_id: str, event: str, payload: dict) -> dict | None
             pass
         if payload.get("type") == "agent-turn-complete":
             db.set_status(agent_id, "idle")
+            if agent.mode == "interactive" and not db.pending_count(agent_id):
+                # What the Stop hook does for Claude Code: an autopilot
+                # supervisor that stops short is told to keep going (capped
+                # by autopilot's own nudge limit), as a typed-in message.
+                from copse import autopilot as pilot
+
+                decision = pilot.on_stop(db, agent, payload)
+                if decision:
+                    db.enqueue(agent_id, decision["reason"], None)
             if db.pending_count(agent_id) and not agent.headless:
                 flush(db, agent_id)
     elif event == "stop-failure":

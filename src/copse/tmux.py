@@ -235,6 +235,16 @@ def window_pids(target: str) -> list[int]:
     return [int(p) for p in out.split() if p.isdigit()]
 
 
+def window_activity(target: str) -> float | None:
+    """When ``target``'s window last printed anything (epoch seconds), or
+    None if tmux can't say."""
+    proc = _tmux("display-message", "-p", "-t", target, "#{window_activity}", check=False)
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
 def kill_window(target: str) -> None:
     _tmux("kill-window", "-t", target, check=False)
 

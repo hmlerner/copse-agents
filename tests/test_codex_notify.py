@@ -62,3 +62,31 @@ def test_hook_main_parses_notify_payload(db, ws):
     codex_agent(db, ws)
     agents.hook_main(db, "c1", "codex-notify", json.dumps({"type": "agent-turn-complete"}))
     assert db.get_agent("c1").status == "idle"
+
+
+def test_autopilot_codex_supervisor_is_told_to_keep_going(db, ws, monkeypatch):
+    """No Stop hook on Codex: a finished turn is where autopilot nudges it."""
+    from copse import autopilot
+
+    codex_agent(db, ws)
+    db.add_autopilot("c1")
+    autopilot.set_goal(db, "c1", "Ship it", [("Done", "false", None)])
+    monkeypatch.setattr(tmux, "capture", lambda *a, **k: "")
+    pasted = []
+    monkeypatch.setattr(tmux, "paste", lambda target, body, **k: pasted.append(body))
+    agents.handle_hook(db, "c1", "codex-notify", {"type": "agent-turn-complete"})
+    assert len(pasted) == 1 and "Keep going" in pasted[0]
+    # Capped like any nudge: no endless loop on a supervisor making no progress.
+    for _ in range(autopilot.MAX_NUDGES + 2):
+        agents.handle_hook(db, "c1", "codex-notify", {"type": "agent-turn-complete"})
+    assert len(pasted) == autopilot.MAX_NUDGES
+
+
+def test_supervisor_refuses_a_provider_that_cant_supervise(repo, monkeypatch):
+    from typer.testing import CliRunner
+
+    from copse.cli import app
+
+    monkeypatch.chdir(repo)
+    res = CliRunner().invoke(app, ["--provider", "native"])
+    assert res.exit_code != 0 and "can't run the supervisor" in res.output
