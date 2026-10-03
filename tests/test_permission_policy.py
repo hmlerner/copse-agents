@@ -120,6 +120,23 @@ def test_symlink_out_of_the_repo_is_not_allowed(ws, tmp_path):
     assert decide(read(ws, link)).decision == "ask"
 
 
+@pytest.mark.parametrize("match,match_type", [("src/*", "glob"), ("src/", "prefix"), ("src/link.txt", "exact")])
+def test_a_user_allow_rule_does_not_follow_a_symlink_out(ws, tmp_path, match, match_type):
+    # An allow rule matches where the path really leads, not the name the
+    # worker chose: a link under an allowed folder can point anywhere.
+    outside = tmp_path / "secret.txt"
+    outside.write_text("x")
+    os.makedirs(os.path.join(ws.path, "src"), exist_ok=True)
+    link = os.path.join(ws.path, "src", "link.txt")
+    os.symlink(outside, link)
+    absolute = os.path.join(os.path.realpath(ws.path), match)
+    for value in (match, absolute):
+        rule = Rule("read", value, match_type, "allow")
+        assert decide(read(ws, link), rules=[rule]).decision == "ask", value
+        # A deny still matches the name as given.
+        assert decide(read(ws, link), rules=[Rule("read", value, match_type, "deny")]).decision == "deny"
+
+
 def test_secret_locations_are_denied(ws):
     assert decide(read(ws, os.path.expanduser("~/.ssh/id_rsa"))).decision == "deny"
     assert decide(read(ws, os.path.expanduser("~/.aws/credentials"))).decision == "deny"

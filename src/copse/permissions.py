@@ -255,15 +255,23 @@ def _roots(req: Request) -> list[str]:
     return list(dict.fromkeys(r for r in (req.worktree, req.repo_root) if r))
 
 
-def path_candidates(req: Request) -> list[str]:
+def path_candidates(req: Request, resolved_only: bool = False) -> list[str]:
+    """The forms of ``req.path`` a rule may match. ``resolved_only`` (for
+    allows) leaves out the name as given: a symlink under an allowed folder
+    can lead anywhere, so only where the path really goes counts. Denies
+    match either."""
     if not req.path:
         return []
     real = os.path.realpath(req.path)
-    out = [real, os.path.abspath(req.path)]
-    for root in _roots(req):
-        rel = _inside(real, root)
-        if rel:
-            out.append(rel)
+    given = os.path.join(os.path.realpath(os.path.dirname(os.path.abspath(req.path))),
+                         os.path.basename(req.path))
+    paths = [real] if resolved_only else [real, os.path.abspath(req.path), given]
+    out = list(paths)
+    for p in paths:
+        for root in _roots(req):
+            rel = _inside(p, root)
+            if rel:
+                out.append(rel)
     return list(dict.fromkeys(out))
 
 
@@ -364,7 +372,9 @@ def rule_matches(rule: Rule, req: Request, checks: list[str] | None = None) -> b
     if req.kind == "bash" and rule.decision == "allow" and simple_argv(req.command) is None:
         return False  # never auto-allow a compound or quoted command
     value = os.path.expanduser(rule.match) if req.kind in PATH_KINDS else rule.match
-    for c in candidates(req):
+    forms = (path_candidates(req, resolved_only=rule.decision == "allow")
+             if req.kind in PATH_KINDS else candidates(req))
+    for c in forms:
         if rule.match_type == "exact" and c == value:
             return True
         if rule.match_type == "prefix" and c.startswith(value):
