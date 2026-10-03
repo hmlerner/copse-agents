@@ -303,6 +303,7 @@ your own status line prints, so what you see doesn't change.
 | `copse ls [--all]` | workspaces and agents |
 | `copse history [--limit N] [--kind K] [--all]` | durable log of worker results, reviews, merges and milestone checks |
 | `copse history --share [--session ID]` | a few lines about this session to paste into Slack or a post: goal, milestones verified, workers, merges, reviews (and how many by a different model), parallel speedup, tokens |
+| `copse permissions list / suggestions / accept / allow / deny / forget / reset` | the rules copse answers workers' permission requests with, and what it suggests from your approvals (see "Permission policy") |
 | `copse learning` | whether copse Pro's hosted learning is on for this repo, and if not, why (nothing is learned on your machine) |
 | `copse account [login\|logout\|status\|upgrade\|portal\|org]` | paid features: bare `copse account` shows what your plan has and how to get the rest (see "copse Pro and Team" below) |
 | `copse audit verify\|export\|pubkey` | the local tamper-evident audit log (copse Enterprise; see "Audit log" below) |
@@ -425,6 +426,7 @@ Autopilot, merge gates and cleanup:
 | `review_rounds` | `2` | fix-and-re-review rounds the pipeline runs before handing findings to the supervisor |
 | `merge_into` | none | branch that worker branches are cut from and merge into, whatever branch the supervisor is on |
 | `auto_merge_default_branch` | `false` | let the pipeline merge into the repo's default branch (origin HEAD, else `main`/`master`) on its own; by default it sends a "needs you" message instead, and you run `merge_workspace` yourself (manual merges are never gated) |
+| `permission_policy` | `"off"` | `"on"`: copse answers Claude Code workers' permission prompts from its rules (see "Permission policy" below); off, the prompts behave as they always did |
 | `plan_first` | `false` | workers propose a plan (`submit_plan`) and wait for `approve_plan` before editing |
 | `overlap` | `"block"` | a task whose `files` overlap a running task's is refused (`"warn"` starts it with a warning) |
 | `pool_size` | `1` if `setup` is set, else `0` | pre-built worktrees (checked out, files copied, setup run) kept ready so a new worker doesn't wait on `setup`; `0` disables it |
@@ -520,6 +522,44 @@ what copse was doing. copse's own Pro, Team and Enterprise plugins (`pro` in
 the events, policy and account groups, `audit` in events;
 `src/copse/pro`) are always installed and do nothing until you log in to a
 plan that includes them.
+
+### Permission policy
+
+With `"permission_policy": "on"` (repo config or `~/.copse/config.json`), when
+a Claude Code worker is about to show a permission prompt, its
+`PermissionRequest` hook hands copse the structured request (the tool and its
+command, path or URL; copse never reads the screen) and copse answers
+**allow**, **deny**, or **ask**, which leaves the prompt to you as usual. Any
+error is ask.
+
+The starting rules:
+
+- **allow** reading a file git tracks in the worktree or repo root (exact
+  path, symlinks resolved and kept inside the root; never `.git/`, ignored or
+  untracked files);
+- **allow** a Bash command that is exactly one of the repo's `checks`, and
+  `git status` / `git diff` / `git log` / `git show`, but only as a single
+  simple command: anything with `;`, `|`, `&`, `$`, backticks, quotes,
+  redirections or globs is never auto-allowed;
+- **deny** `git push`, git force flags, and reading `~/.ssh`, `~/.aws`,
+  `~/.gnupg` or `.env*`;
+- **ask** for everything else.
+
+A deny beats any allow; nothing else is ranked. Add your own with
+`copse permissions allow|deny KIND MATCH` (kinds: `read`, `write`, `edit`,
+`bash`, `fetch`, `mcp`, `other`; the match is exact unless `--prefix` or
+`--glob`); they're kept in `~/.copse/permissions.json`. A repo's
+`.copse/permissions.json` (`{"rules": [...]}`, same format) can only add
+denies. `copse permissions list` shows every rule and where it came from,
+`forget ID` removes one of yours, `reset` goes back to the starting rules.
+
+copse learns from what you approve, but never on its own: when a request it
+left to you is approved (the tool ran), it counts that exact command or path.
+Once you've approved the same one twice, `copse permissions suggestions` lists
+it, and `copse permissions accept ID` makes it a rule. A prompt the turn ended
+on without the tool running counts for nothing. Every decision is in
+`copse history --kind permission`, and when a worker sits on a prompt, its
+supervisor is told exactly which request is pending (only you can answer it).
 
 ## copse Pro and Team
 

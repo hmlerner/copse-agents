@@ -172,10 +172,13 @@ def note_stuck(db: DB, now: float, panes: dict[str, bool]) -> list[str]:
         tail = "\n".join([ln for ln in screen.rstrip().splitlines() if ln.strip()][-12:])
         where = f" on branch `{ws.branch}`" if ws else ""
         attach = f" Attach with `copse attach {ws.name}` to answer it," if ws else " Answer it in its pane,"
+        pending = agents.pending_permission(db, a.id)
+        request = (f"\n\n{pending} Only the user can answer it; tell them exactly what is pending."
+                   if pending else "")
         body = (f"Worker {a.id} ({a.profile}){where} has been waiting on a prompt for "
                 f"{int(now - since)}s and can't continue until someone answers it.{attach} "
                 f"or remove the workspace if it's no longer needed.{auto_mode_note(a, ws)}"
-                f"\n\nIts screen:\n{tail}")
+                f"{request}\n\nIts screen:\n{tail}")
         try:
             agents.send_message(db, a.parent_id, body, sender_id=a.id)
         except agents.AgentError:

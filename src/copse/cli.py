@@ -812,6 +812,124 @@ def history(
     typer.echo(f"\ntotal tokens: {format_tokens(total)}")
 
 
+# -- copse permissions (the permission policy; see copse.permissions) -------------------------
+
+permissions_app = typer.Typer(no_args_is_help=True,
+                              help="The rules copse answers workers' permission requests with "
+                                   "(when permission_policy is \"on\").")
+app.add_typer(permissions_app, name="permissions")
+
+
+def _here_repo() -> str | None:
+    try:
+        return git.main_repo_root(os.getcwd())
+    except git.GitError:
+        return None
+
+
+@permissions_app.command("list")
+def permissions_list() -> None:
+    """Every rule in force (built-in, this repo's denies, yours and learned), with its source."""
+    from copse import permissions as perms
+
+    repo = _here_repo()
+    if repo:
+        from copse.config import load_repo_config
+
+        state = load_repo_config(repo).permission_policy
+        typer.echo(f"permission_policy: {state if state == 'on' else 'off'}\n")
+    for r in perms.all_rules(repo):
+        typer.echo(f"{r.id:<12} {r.decision:<5} {r.kind:<5} {r.source:<7} {r.describe()}")
+
+
+@permissions_app.command("suggestions")
+def permissions_suggestions() -> None:
+    """Requests you approved at least twice that no rule covers yet (accept one with `accept ID`)."""
+    from copse import permissions as perms
+
+    rows = perms.suggestions()
+    if not rows:
+        typer.echo("no suggestions")
+        return
+    for s in rows:
+        typer.echo(f"{s.id:<12} allow {s.kind:<5} exact {s.match!r}  (approved {s.count}x)")
+
+
+@permissions_app.command("accept")
+def permissions_accept(rule_id: str = typer.Argument(..., metavar="ID")) -> None:
+    """Turn a suggestion into an allow rule."""
+    from copse import permissions as perms
+
+    rule = perms.accept(rule_id)
+    if rule is None:
+        typer.echo(f"no suggestion {rule_id} (see `copse permissions suggestions`)")
+        raise typer.Exit(1)
+    typer.echo(f"{rule.id}: allow {rule.describe()} (learned)")
+
+
+def _add_permission_rule(decision: str, kind: str, match: str, prefix: bool, glob: bool) -> None:
+    from copse import permissions as perms
+
+    if prefix and glob:
+        typer.echo("--prefix and --glob can't be combined")
+        raise typer.Exit(2)
+    try:
+        rule = perms.add_rule(kind, match, decision, "prefix" if prefix else "glob" if glob else "exact")
+    except ValueError as e:
+        typer.echo(str(e))
+        raise typer.Exit(2)
+    typer.echo(f"{rule.id}: {decision} {rule.describe()}")
+
+
+_KIND_HELP = "read, write, edit, bash, fetch, mcp or other."
+
+
+@permissions_app.command("allow")
+def permissions_allow(
+    kind: str = typer.Argument(..., help=_KIND_HELP),
+    match: str = typer.Argument(..., help="The command, path, URL or tool name (exact unless --prefix/--glob)."),
+    prefix: bool = typer.Option(False, "--prefix", help="Match anything starting with MATCH."),
+    glob: bool = typer.Option(False, "--glob", help="MATCH is a shell-style glob (* also crosses /)."),
+) -> None:
+    """Allow requests that match. A bash allow never covers a command with shell metacharacters."""
+    _add_permission_rule("allow", kind, match, prefix, glob)
+
+
+@permissions_app.command("deny")
+def permissions_deny(
+    kind: str = typer.Argument(..., help=_KIND_HELP),
+    match: str = typer.Argument(..., help="The command, path, URL or tool name (exact unless --prefix/--glob)."),
+    prefix: bool = typer.Option(False, "--prefix", help="Match anything starting with MATCH."),
+    glob: bool = typer.Option(False, "--glob", help="MATCH is a shell-style glob (* also crosses /)."),
+) -> None:
+    """Deny requests that match (a deny beats any allow)."""
+    _add_permission_rule("deny", kind, match, prefix, glob)
+
+
+@permissions_app.command("forget")
+def permissions_forget(rule_id: str = typer.Argument(..., metavar="ID")) -> None:
+    """Remove one of your or learned rules (or a suggestion's approval count). Built-in rules stay."""
+    from copse import permissions as perms
+
+    gone = perms.forget(rule_id)
+    if gone is None:
+        typer.echo(f"no rule or suggestion {rule_id} of yours (built-in and repo rules can't be forgotten)")
+        raise typer.Exit(1)
+    typer.echo(f"forgot {gone}")
+
+
+@permissions_app.command("reset")
+def permissions_reset(yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation.")) -> None:
+    """Back to the built-in rules: drop your rules, learned rules and approval counts."""
+    from copse import permissions as perms
+
+    if not yes:
+        typer.confirm("Remove all your and learned permission rules and approval counts?",
+                      default=False, abort=True)
+    perms.reset()
+    typer.echo("permission rules reset to the defaults")
+
+
 @app.command()
 def learning() -> None:
     """What copse Pro's hosted learner has learned about which profiles fit which tasks (nothing is learned on this machine)."""
@@ -1335,7 +1453,13 @@ def hook(event: str, agent: Optional[str] = typer.Option(None, "--agent"),
         return
     # Codex's notify passes the JSON as an argument; Claude Code's hooks use stdin.
     text = payload if payload is not None else sys.stdin.read()
-    out = agents.hook_main(DB(), agent_id, event, text, trusted=agent is not None)
+    if event == "permission-request":
+        try:  # any failure means no output: the person is asked as usual
+            out = agents.hook_main(DB(), agent_id, event, text, trusted=agent is not None)
+        except Exception:  # noqa: BLE001
+            return
+    else:
+        out = agents.hook_main(DB(), agent_id, event, text, trusted=agent is not None)
     if out:
         typer.echo(out)
 

@@ -35,7 +35,7 @@ TASK_CHARS = 300
 RESULT_CHARS = 2000
 CAP_PER_REPO = 5000
 
-KINDS = ("worker_result", "review", "merge", "check", "milestone")
+KINDS = ("worker_result", "review", "merge", "check", "milestone", "permission")
 
 
 def _trim(text: str | None, limit: int) -> str | None:

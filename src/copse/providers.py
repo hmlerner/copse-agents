@@ -260,6 +260,11 @@ class ClaudeCode(Provider):
                 # file edit by a plan_first worker whose plan isn't approved,
                 # so only those agents run the hook on edit tools too.
                 "PreToolUse": [{"matcher": "Bash|Edit|Write|NotebookEdit" if ctx.plan_first else "Bash", **self._hook("pre-tool", ctx.agent_id)[0]}],
+                # When a tool would prompt, copse's permission policy (off
+                # unless permission_policy is "on"; see copse.permissions)
+                # may answer allow or deny from the structured request; no
+                # answer leaves the prompt to the person.
+                "PermissionRequest": self._hook("permission-request", ctx.agent_id),
             },
             # Claude Code only tells status lines how much of the plan's usage
             # is spent. copse's records that, then runs the person's own
